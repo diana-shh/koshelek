@@ -10,7 +10,7 @@ import { merchantKey, isGenericKey, autoCategory, sortRules, makeRule, ruleMatch
 import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
 import { buildReport, exportXlsx, chartPng, isWorkTx } from './report.js';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -856,6 +856,13 @@ function renderMore() {
     <section class="card">
       <h2>О приложении</h2>
       <p class="muted small">Версия ${APP_VERSION}. Работает без интернета. Операций: ${S.txs.length}, правил: ${S.rules.length}. <span id="persist-st"></span></p>
+      <div class="btn-row"><button class="secondary" type="button" data-act="upd-check" id="upd-btn">Проверить обновления</button></div>
+      <p class="muted small" id="upd-st"></p>
+      <button class="link left" type="button" data-act="reinstall" id="re-a">Переустановить файлы приложения</button>
+      <div class="note" id="re-b" hidden>
+        <p>Кошелёк заново скачает свои файлы с сайта. Ваши операции, категории и правила останутся на месте. Нужен интернет.</p>
+        <div class="btn-row"><button class="primary small" type="button" data-act="reinstall-yes">Переустановить</button><button class="secondary small" type="button" data-act="reinstall-no">Отмена</button></div>
+      </div>
     </section>`;
   db.persist().then(ok => { const s = $('#persist-st'); if (s) s.textContent = ok ? 'Хранилище закреплено: телефон не удалит данные сам.' : ''; });
   for (const d of $$('details[data-fold]', screen)) d.addEventListener('toggle', () => { if (d.open) S.settings.openFold = d.dataset.fold; });
@@ -956,6 +963,18 @@ function renderMore() {
     },
     backup: () => doBackup(),
     restore: () => $('#restore-in').click(),
+    'upd-check': (el) => checkUpdate(el, $('#upd-st', screen)),
+    'upd-apply': () => { if (swReg && swReg.waiting) swReg.waiting.postMessage('skip'); },
+    reinstall: () => { $('#re-a', screen).hidden = true; $('#re-b', screen).hidden = false; },
+    'reinstall-no': () => { $('#re-a', screen).hidden = false; $('#re-b', screen).hidden = true; },
+    'reinstall-yes': async () => {
+      // Только файлы программы: данные лежат в отдельном хранилище и не трогаются.
+      try {
+        for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+        for (const k of await caches.keys()) await caches.delete(k);
+      } catch {}
+      location.reload();
+    },
   });
 }
 
@@ -1172,19 +1191,42 @@ $('#file-in').addEventListener('change', async (e) => {
 });
 
 // ---------- обновления приложения ----------
+let swReg = null;
+function showUpdate() {
+  const b = $('#update');
+  b.hidden = false;
+  b.onclick = () => { if (swReg && swReg.waiting) swReg.waiting.postMessage('skip'); };
+}
+function watchInstalling(w) {
+  if (!w) return;
+  w.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) showUpdate(); });
+}
+/** Кнопка «Проверить обновления»: спросить сайт, дождаться загрузки и предложить обновиться. */
+async function checkUpdate(btn, st) {
+  if (!swReg) { st.textContent = 'Обновления работают в приложении, открытом с сайта.'; return; }
+  btn.disabled = true; btn.textContent = 'Проверяю…'; st.textContent = '';
+  try { await swReg.update(); } catch { st.textContent = 'Не получилось связаться с сайтом. Проверьте интернет.'; }
+  for (let i = 0; i < 60 && swReg.installing; i++) { st.textContent = 'Загружаю новую версию…'; await new Promise(r => setTimeout(r, 500)); }
+  btn.disabled = false;
+  if (swReg.waiting) {
+    btn.textContent = 'Обновить сейчас'; btn.dataset.act = 'upd-apply';
+    st.textContent = 'Новая версия загружена.';
+  } else {
+    btn.textContent = 'Проверить обновления';
+    if (!st.textContent) st.textContent = `У вас последняя версия (${APP_VERSION}).`;
+  }
+}
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').then(reg => {
-    const show = () => {
-      const b = $('#update');
-      b.hidden = false;
-      b.onclick = () => { if (reg.waiting) reg.waiting.postMessage('skip'); };
-    };
-    if (reg.waiting) show();
-    reg.addEventListener('updatefound', () => {
-      const w = reg.installing;
-      if (w) w.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) show(); });
-    });
+    swReg = reg;
+    if (reg.waiting) showUpdate();
+    watchInstalling(reg.installing);
+    reg.addEventListener('updatefound', () => watchInstalling(reg.installing));
   }).catch(() => {});
+  // На iPhone приложение со значка часто не перезапускается, а возвращается из фона — проверяем и тогда.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && swReg) swReg.update().catch(() => {});
+  });
   let reloaded = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (!reloaded) { reloaded = true; location.reload(); } });
 }
