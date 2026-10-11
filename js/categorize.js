@@ -104,7 +104,9 @@ export function isOwnTransfer(tx, ctx = {}) {
 /** Предложение категории для операции или null, если надо спросить. */
 export function autoCategory(tx, sortedRules, catMap, ctx = {}) {
   for (const r of sortedRules) {
-    if (ruleMatches(r, tx) && catMap.has(r.category)) return { category: r.category, by: 'rule', ruleId: r.id, tags: r.tags || [] };
+    if (!ruleMatches(r, tx)) continue;
+    if (r.ignore) return { ignore: true, by: 'rule', ruleId: r.id };
+    if (catMap.has(r.category) && categoryFits(catMap.get(r.category), tx)) return { category: r.category, by: 'rule', ruleId: r.id, tags: r.tags || [] };
   }
   if (catMap.has('own') && isOwnTransfer(tx, ctx)) return { category: 'own', by: 'own' };
   const text = tx.desc + ' ' + (tx.raw || '');
@@ -125,7 +127,8 @@ export function autoCategory(tx, sortedRules, catMap, ctx = {}) {
   return null;
 }
 
-export function makeRule(tx, category, scope) {
+/** ignore: true — правило «не учитывать» вместо категории. */
+export function makeRule(tx, category, scope, ignore = false) {
   const value = scope || tx.key;
-  return { id: uid(), op: value === tx.key ? 'equals' : 'prefix', value, dir: dirOf(tx), category, tags: [], created: today() };
+  return { id: uid(), op: value === tx.key ? 'equals' : 'prefix', value, dir: dirOf(tx), category: ignore ? null : category, ignore, tags: [], created: today() };
 }

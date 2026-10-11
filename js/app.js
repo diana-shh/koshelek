@@ -10,7 +10,7 @@ import { merchantKey, isGenericKey, autoCategory, sortRules, makeRule, ruleMatch
 import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
 import { buildReport, exportXlsx, chartPng, isWorkTx } from './report.js';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -84,18 +84,27 @@ const saveSettings = () => db.setMeta('settings', S.settings);
 
 const isWork = (t) => isWorkTx(t, S.tagMap);
 const catName = (id) => (S.catMap.get(id) ? S.catMap.get(id).name : 'Без категории');
+/** Ждёт ответа во вкладке «Разобрать»: нет категории и не отмечена «не учитывать». */
+const needsAnswer = (t) => !t.category && !t.ignored;
+/** Входит в расходы и доходы: не «не учитывать» и не перевод между своими счетами. */
+const counted = (t) => !t.ignored && !(S.catMap.get(t.category) && S.catMap.get(t.category).type === 'transfer');
 function updateReimb(t) {
   if (isWork(t)) { if (!t.reimb) t.reimb = 'pending'; }
   else t.reimb = null;
 }
 
-/** Применить правило ко всем операциям с тем же получателем, кроме выставленных вручную. */
-function applyRule(rule, exceptId) {
+/** Применить правило ко всем операциям с тем же получателем. Выставленные вручную меняются,
+ *  только когда человек сам поменял категорию в карточке операции (includeManual). */
+function applyRule(rule, exceptId, includeManual = false) {
   const changed = [];
   for (const t of S.txs) {
-    if (t.id === exceptId || t.catBy === 'manual') continue;
+    if (t.id === exceptId || (!includeManual && t.catBy === 'manual')) continue;
     if (!ruleMatches(rule, t)) continue;
-    t.category = rule.category; t.catBy = 'rule'; t.ruleId = rule.id;
+    if (rule.ignore) { t.ignored = true; t.ruleId = rule.id; }
+    else {
+      if (!categoryFits(S.catMap.get(rule.category), t)) continue;
+      t.category = rule.category; t.catBy = includeManual ? 'manual' : 'rule'; t.ruleId = rule.id;
+    }
     changed.push(t);
   }
   return changed;
@@ -123,7 +132,7 @@ function findCounterpart(t, used = new Set()) {
   const win = t.time ? 15 * 60000 : 86400000;
   return S.txs.find(o => o.id !== t.id && !used.has(o.id) && o.amount === -t.amount
     && o.bank !== t.bank && o.bank !== 'Вручную' && t.bank !== 'Вручную'
-    && (!o.category || o.category === 'own') && transferLike(o)
+    && (!o.category || o.category === 'own') && !o.ignored && transferLike(o)
     && Math.abs(stamp(o) - stamp(t)) <= (o.time ? win : 86400000)
     && (!mt || mt === o.bank) && (!mentionedBank(o) || mentionedBank(o) === t.bank)) || null;
 }
@@ -132,13 +141,16 @@ function findCounterpart(t, used = new Set()) {
 function autoRecheck() {
   const changed = [];
   for (const t of S.txs) {
-    if (t.category) continue;
+    if (!needsAnswer(t)) continue;
     const sug = autoCategory(t, S.sortedRules, S.catMap, autoCtx());
-    if (sug) { t.category = sug.category; t.catBy = sug.by; if (sug.ruleId) t.ruleId = sug.ruleId; changed.push(t); }
+    if (!sug) continue;
+    if (sug.ignore) { t.ignored = true; t.ruleId = sug.ruleId; }
+    else { t.category = sug.category; t.catBy = sug.by; if (sug.ruleId) t.ruleId = sug.ruleId; }
+    changed.push(t);
   }
   const used = new Set(S.txs.filter(t => t.pairId).map(t => t.id));
   for (const t of S.txs) {
-    if (t.category || used.has(t.id)) continue;
+    if (!needsAnswer(t) || used.has(t.id)) continue;
     const o = findCounterpart(t, used);
     if (!o) continue;
     t.category = 'own'; t.catBy = 'pair'; t.pairId = o.id;
@@ -188,7 +200,7 @@ function render() {
   for (const b of $$('#tabbar [data-tab]')) {
     if (b.dataset.tab === S.tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   }
-  const n = S.txs.filter(t => !t.category).length;
+  const n = S.txs.filter(needsAnswer).length;
   const badge = $('#queue-badge');
   badge.textContent = n > 99 ? '99+' : String(n);
   badge.hidden = !n;
@@ -207,17 +219,17 @@ function txRow(t) {
   return `<button class="tx" type="button" data-act="edit" data-id="${esc(t.id)}">
     <span class="tx-main">
       <span class="tx-title">${esc(prettyDesc(t.desc))}</span>
-      <span class="tx-sub">${c ? esc(c.name) : '<span class="pill warn">без категории</span>'}${tags.map(g => ` <span class="pill">${esc(g.name)}</span>`).join('')}${t.reimb === 'done' ? ' <span class="pill ok">возмещено</span>' : ''}${t.bank ? ` · ${esc(t.bank)}` : ''}</span>
+      <span class="tx-sub">${c ? esc(c.name) : t.ignored ? '' : '<span class="pill warn">без категории</span>'}${t.ignored ? `${c ? ' ' : ''}<span class="pill">не учитывается</span>` : ''}${tags.map(g => ` <span class="pill">${esc(g.name)}</span>`).join('')}${t.reimb === 'done' ? ' <span class="pill ok">возмещено</span>' : ''}${t.bank ? ` · ${esc(t.bank)}` : ''}</span>
       ${t.comment ? `<span class="tx-note">${esc(t.comment)}</span>` : ''}
     </span>
-    <span class="${amountCls(t)}${c && c.type === 'transfer' ? ' transfer' : ''}">${money(t.amount)}</span>
+    <span class="${amountCls(t)}${!counted(t) ? ' transfer' : ''}">${money(t.amount)}</span>
   </button>`;
 }
 function txListByDay(list) {
   const days = new Map();
   for (const t of list) { if (!days.has(t.date)) days.set(t.date, []); days.get(t.date).push(t); }
   return [...days].map(([d, items]) => {
-    const spent = items.filter(t => t.amount < 0 && !(S.catMap.get(t.category) && S.catMap.get(t.category).type === 'transfer')).reduce((s, t) => s - t.amount, 0);
+    const spent = items.filter(t => t.amount < 0 && counted(t)).reduce((s, t) => s - t.amount, 0);
     return `<section class="day"><div class="day-h"><span>${esc(dayTitle(d))}</span><span>${spent ? MINUS + rub(spent) : ''}</span></div>
       <div class="list">${items.map(txRow).join('')}</div></section>`;
   }).join('');
@@ -253,7 +265,7 @@ function renderHome() {
   const latest = S.txs.reduce((m, t) => (t.date > m ? t.date : m), '');
   const m = monthOf(today()) <= monthOf(latest) ? monthOf(today()) : monthOf(latest);
   const rep = buildReport({ txs: S.txs, catMap: S.catMap, tagMap: S.tagMap, from: m + '-01', to: monthEnd(m), includeWork: false });
-  const uncat = S.txs.filter(t => !t.category);
+  const uncat = S.txs.filter(needsAnswer);
   const pend = S.txs.filter(t => t.amount < 0 && isWork(t) && t.reimb !== 'done');
   const pendSum = pend.reduce((s, t) => s - t.amount, 0);
   const top = rep.cats.slice(0, 4);
@@ -319,9 +331,10 @@ function opsFiltered() {
   if (o.tag === 'pending') list = S.txs.filter(t => t.amount < 0 && isWork(t) && t.reimb !== 'done');
   else if (o.range) list = S.txs.filter(t => t.date >= o.range.from && t.date <= o.range.to);
   else list = S.txs.filter(t => t.date.startsWith(o.month));
-  if (o.cat === 'none') list = list.filter(t => !t.category);
+  if (o.cat === 'none') list = list.filter(needsAnswer);
   else if (o.cat !== 'all') list = list.filter(t => t.category === o.cat);
-  if (o.tag !== 'all' && o.tag !== 'pending') list = list.filter(t => (t.tags || []).includes(o.tag));
+  if (o.tag === 'ignored') list = list.filter(t => t.ignored);
+  else if (o.tag !== 'all' && o.tag !== 'pending') list = list.filter(t => (t.tags || []).includes(o.tag));
   if (q) {
     const qn = q.replace(',', '.').replace(/\s/g, '');
     list = list.filter(t => normText(t.desc + ' ' + (t.comment || '') + ' ' + catName(t.category)).includes(q) || String(Math.abs(t.amount) / 100).includes(qn));
@@ -332,7 +345,7 @@ function opsFiltered() {
 function renderOps() {
   const o = S.ops;
   const catOpts = [['all', 'Все категории'], ['none', 'Без категории'], ...S.cats.map(c => [c.id, c.name])];
-  const tagOpts = [['all', 'Все метки'], ['pending', 'Ждут возмещения'], ...S.tags.map(t => [t.id, t.name])];
+  const tagOpts = [['all', 'Все метки'], ['pending', 'Ждут возмещения'], ['ignored', 'Не учитываются'], ...S.tags.map(t => [t.id, t.name])];
   let period;
   if (o.tag === 'pending') period = `<p class="muted">Рабочие траты за всё время, которые ещё не возместили.</p>`;
   else if (o.range) period = `<div class="range-bar"><span>${dateDots(o.range.from)} – ${dateDots(o.range.to)}</span><button class="link" type="button" data-act="by-month">по месяцам</button></div>`;
@@ -380,8 +393,7 @@ function fillOps() {
   const list = opsFiltered();
   let exp = 0, inc = 0;
   for (const t of list) {
-    const c = S.catMap.get(t.category);
-    if (c && c.type === 'transfer') continue;
+    if (!counted(t)) continue;
     if (t.amount < 0) exp -= t.amount; else inc += t.amount;
   }
   body.innerHTML = `
@@ -421,7 +433,8 @@ function editTx(t) {
       </div>
     `}
     <div class="group"><div class="group-h">Категория</div>
-      <fieldset class="chips" id="e-cats" aria-label="Категория">${chipsHtml('cat', fittingCats(dir), t ? t.category : null)}</fieldset></div>
+      <fieldset class="chips" id="e-cats" aria-label="Категория">${chipsHtml('cat', fittingCats(dir), t ? t.category : null)}<button class="chip-add" type="button" data-act="newcat">+ категория</button></fieldset>
+      ${newCatRowHtml('e')}</div>
     <div class="group"><div class="group-h">Метки</div>
       <fieldset class="chips" id="e-tags" aria-label="Метки">${chipsHtml('tag', S.tags, tagsSel, 'checkbox')}
         <button class="chip-add" type="button" data-act="newtag">+ метка</button></fieldset>
@@ -432,7 +445,8 @@ function editTx(t) {
       <input type="radio" name="reimb" id="r-d" value="done" ${t && t.reimb === 'done' ? 'checked' : ''}><label for="r-d">Возмещено</label>
     </fieldset>
     <label class="field" for="e-comment">Комментарий<input id="e-comment" maxlength="200" value="${esc(t ? t.comment || '' : '')}" placeholder="Например, поездка к поставщику" autocomplete="off"></label>
-    ${canRule ? ruleBoxHtml('e', t.key, sameKey > 0, sameKey) : ''}
+    <label class="check ignore-box"><input type="checkbox" id="e-ign" ${t && t.ignored ? 'checked' : ''}><span><b>Не учитывать</b><br><span class="muted small">Операция останется в списке, но не попадёт ни в расходы, ни в доходы, ни в отчёт.</span></span></label>
+    ${canRule ? ruleBoxHtml('e', t.key, sameKey > 0 && !t.ignored, sameKey) : ''}
     <p class="err" id="e-err" hidden></p>
     <button class="primary" type="submit">Сохранить</button>
     ${t ? `<div class="del-zone"><button class="text-danger" type="button" data-act="del" id="e-del">Удалить операцию</button>
@@ -444,7 +458,9 @@ function editTx(t) {
   };
   openSheet(html, {
     close: closeSheet,
-    dir: (el) => { $('#e-cats', sheet).innerHTML = chipsHtml('cat', fittingCats(el.value), null); },
+    dir: (el) => { $('#e-cats', sheet).innerHTML = chipsHtml('cat', fittingCats(el.value), null) + '<button class="chip-add" type="button" data-act="newcat">+ категория</button>'; },
+    newcat: () => showNewCat('e'),
+    'newcat-ok': () => addCatInline('e', 'cat', isNew ? ($('input[name="dir"]:checked', sheet) || {}).value || 'out' : dir),
     newtag: () => { $('#newtag-row', sheet).hidden = false; $('#newtag', sheet).focus(); },
     'newtag-ok': async () => {
       const name = $('#newtag', sheet).value.trim();
@@ -478,21 +494,26 @@ function editTx(t) {
         const desc = $('#e-desc', sheet).value.trim() || (catIn ? catName(catIn.value) : 'Наличные');
         target = { id: 'm' + uid(), bank: 'Вручную', account: '', date, time: '', amount: d === 'out' ? -kop : kop, desc, key: merchantKey(desc), bankCategory: '', mcc: '', manual: true, created: new Date().toISOString() };
       }
+      const ignored = $('#e-ign', sheet).checked;
+      const catChanged = !isNew && (catIn ? catIn.value : null) !== t.category;
+      const ignoreChanged = !isNew && ignored !== !!t.ignored;
       target.category = catIn ? catIn.value : null;
       target.catBy = catIn ? 'manual' : null;
+      target.ignored = ignored;
       target.tags = tags;
       target.comment = comment;
       if (isWork(target)) target.reimb = ($('input[name="reimb"]:checked', sheet) || {}).value || 'pending';
       else target.reimb = null;
       const changed = [target];
       const ruleBox = $('#e-rule', sheet);
-      if (ruleBox && ruleBox.checked && target.category) {
-        const rule = makeRule(target, target.category, $('#e-scope', sheet).value);
+      if (ruleBox && ruleBox.checked && (target.category || ignored)) {
+        const rule = makeRule(target, ignored ? null : target.category, $('#e-scope', sheet).value, ignored);
         S.rules = S.rules.filter(r => !(r.op === rule.op && r.value === rule.value && r.dir === rule.dir));
         S.rules.push(rule); reindex();
         await db.put('rules', rule);
-        target.catBy = 'manual'; target.ruleId = rule.id;
-        changed.push(...applyRule(rule, target.id));
+        target.ruleId = rule.id;
+        // Человек сам поменял категорию — меняем её и у всех таких же операций, даже разобранных вручную.
+        changed.push(...applyRule(rule, target.id, catChanged || ignoreChanged));
       }
       if (isNew) { S.txs.push(target); reindex(); }
       await saveTxs(changed);
@@ -502,8 +523,45 @@ function editTx(t) {
     },
   });
   const baseChange = sheet.onchange;
-  sheet.onchange = (e) => { baseChange(e); if (e.target.name === 'tag') refreshReimb(); };
+  sheet.onchange = (e) => {
+    baseChange(e);
+    if (e.target.name === 'tag') refreshReimb();
+    // «Не учитывать» обычно про одну операцию: не распространять на всех получателей без явного согласия.
+    if (e.target.id === 'e-ign' && e.target.checked && $('#e-rule', sheet)) $('#e-rule', sheet).checked = false;
+  };
   if (isNew) setTimeout(() => { const a = $('#e-amount', sheet); if (a) a.focus(); }, 50);
+}
+
+const newCatRowHtml = (p) => `<div class="add-row" id="${p}-newcat-row" hidden><input id="${p}-newcat" maxlength="40" placeholder="Название новой категории" autocomplete="off" aria-label="Название новой категории"><button type="button" class="secondary small" data-act="newcat-ok">Добавить</button></div>`;
+function showNewCat(p) {
+  const root = p === 'q' ? screen : sheet;
+  $(`#${p}-newcat-row`, root).hidden = false;
+  $(`#${p}-newcat`, root).focus();
+}
+/** Своя категория прямо из выбора: создаётся, появляется среди вариантов и сразу выбрана. */
+async function addCatInline(p, inputName, type) {
+  const root = p === 'q' ? screen : sheet;
+  const inp = $(`#${p}-newcat`, root);
+  const name = inp.value.trim();
+  if (!name) return;
+  let c = S.cats.find(x => x.name.toLowerCase() === name.toLowerCase() && (x.type === type || x.type === 'transfer'));
+  if (!c) {
+    c = { id: 'c' + uid(), name, type: type === 'in' ? 'in' : 'out' };
+    const lastOfType = S.cats.map(x => x.type).lastIndexOf(c.type);
+    S.cats.splice(lastOfType + 1, 0, c);
+    await saveCats();
+  }
+  let input = $(`input[name="${inputName}"][value="${c.id}"]`, root);
+  if (!input) {
+    const tmp = document.createElement('span');
+    tmp.innerHTML = chipsHtml(inputName, [c], c.id);
+    $('.chip-add[data-act="newcat"]', root).before(tmp.firstElementChild);
+    input = $(`input[name="${inputName}"][value="${c.id}"]`, root);
+  }
+  input.checked = true;
+  inp.value = '';
+  $(`#${p}-newcat-row`, root).hidden = true;
+  toast(`Категория «${c.name}» добавлена`);
 }
 
 /** «Запомнить и больше не спрашивать про [PEREKRESTOK …]» — с выбором, на сколько широко действует правило. */
@@ -523,7 +581,7 @@ function ruleBoxHtml(prefix, key, checked, more = 0) {
 function queueGroups() {
   const groups = new Map();
   for (const t of S.txs) {
-    if (t.category) continue;
+    if (!needsAnswer(t)) continue;
     const gkBase = (isGenericKey(t.key) ? 'g:' + normText(prettyDesc(t.desc)).replace(/[\d*•№]+/g, '').replace(/\s+/g, ' ') : t.key) + '|' + dirOf(t);
     const gk = S.queue.split.has(gkBase) ? 'tx:' + t.id : gkBase;
     if (!groups.has(gk)) groups.set(gk, { id: gk, base: gkBase, key: t.key, dir: dirOf(t), items: [] });
@@ -563,7 +621,9 @@ function renderQueue() {
       ${hintCat ? `<div class="hint">Похоже на перевод между своими счетами: есть встречная операция ${money(hintCat.amount)} в ${esc(hintCat.bank)} ${dateDots(hintCat.date)}.</div>` : ''}
       ${g.items.length > 1 ? `<ul class="q-ex">${g.items.slice(0, 4).map(t => `<li><span>${dateDots(t.date)}</span><span class="${amountCls(t)}">${money(t.amount)}</span></li>`).join('')}${g.items.length > 4 ? `<li class="muted">и ещё ${g.items.length - 4}</li>` : ''}</ul>` : ''}
       <div class="group"><div class="group-h">${g.dir === 'out' ? 'Что это за трата?' : 'Что это за поступление?'}</div>
-        <fieldset class="chips" aria-label="Категория">${chipsHtml('qcat', fittingCats(g.dir), preselect)}</fieldset></div>
+        <fieldset class="chips" aria-label="Категория">${chipsHtml('qcat', fittingCats(g.dir), preselect)}<button class="chip-add" type="button" data-act="newcat">+ категория</button></fieldset>
+        ${newCatRowHtml('q')}
+        <button class="link left" type="button" data-act="cats">Переименовать или удалить категории</button></div>
       <details class="more"><summary>Метка и комментарий</summary>
         <fieldset class="chips" aria-label="Метки">${chipsHtml('qtag', S.tags, [], 'checkbox')}</fieldset>
         <label class="field" for="q-comment">Комментарий${g.items.length > 1 ? ' (ко всем операциям группы)' : ''}<input id="q-comment" maxlength="200" autocomplete="off"></label>
@@ -571,6 +631,7 @@ function renderQueue() {
       ${!generic ? ruleBoxHtml('q', g.key, true) : `<p class="muted small">В описании нет получателя, поэтому правило не создаётся${g.items.length > 1 ? '. Если операции разные, нажмите «Разобрать по одной»' : ''}.</p>`}
       <p class="err" id="q-err" hidden></p>
       <button class="primary" type="button" data-act="done">Готово</button>
+      <button class="secondary" type="button" data-act="ignore">Не учитывать${g.items.length > 1 ? ` (все ${g.items.length})` : ''}</button>
       <div class="btn-row center">
         <button class="link" type="button" data-act="skip">Пропустить</button>
         ${g.items.length > 1 ? `<button class="link" type="button" data-act="split">Разобрать по одной</button>` : ''}
@@ -581,6 +642,28 @@ function renderQueue() {
     skip: () => { S.queue.skipped = S.queue.skipped.filter(x => x !== g.id); S.queue.skipped.push(g.id); renderQueue(); },
     split: () => { S.queue.split.add(g.base); renderQueue(); },
     open: () => editTx(t0),
+    newcat: () => showNewCat('q'),
+    'newcat-ok': () => addCatInline('q', 'qcat', g.dir),
+    cats: () => { S.settings.openFold = 'cats'; setTab('more'); },
+    ignore: async () => {
+      const comment = $('#q-comment', screen).value.trim();
+      const changed = [];
+      for (const t of g.items) { t.ignored = true; if (comment) t.comment = comment; changed.push(t); }
+      const rb = $('#q-rule', screen);
+      let ruleNote = '';
+      if (rb && rb.checked) {
+        const rule = makeRule(t0, null, $('#q-scope', screen).value, true);
+        S.rules = S.rules.filter(r => !(r.op === rule.op && r.value === rule.value && r.dir === rule.dir));
+        S.rules.push(rule); reindex();
+        await db.put('rules', rule);
+        changed.push(...applyRule(rule));
+        ruleNote = `. Правило: «${rule.value}» не учитывать`;
+      }
+      await saveTxs(changed);
+      S.queue.skipped = S.queue.skipped.filter(x => x !== g.id);
+      toast(`Не учитывается: ${g.items.length}${ruleNote}`);
+      render();
+    },
     done: async () => {
       const c = $('input[name="qcat"]:checked', screen);
       if (!c) { const e = $('#q-err', screen); e.textContent = 'Выберите категорию.'; e.hidden = false; return; }
@@ -672,7 +755,7 @@ function renderReport() {
       <button class="primary" type="button" data-act="xlsx" ${rep.rows.length ? '' : 'disabled'}>Выгрузить в Excel</button>
       <button class="secondary" type="button" data-act="png" ${rep.cats.length ? '' : 'disabled'}>График картинкой</button>
     </div>
-    <p class="muted small">${rep.transfers ? `Переводы между своими счетами (${rep.transfers}) не входят ни в расходы, ни в доходы.` : ''}</p>`;
+    <p class="muted small">${rep.transfers ? `Переводы между своими счетами (${rep.transfers}) не входят ни в расходы, ни в доходы. ` : ''}${rep.ignored.length ? `Не учитываются по вашей отметке: ${rep.ignored.length} ${plural(rep.ignored.length, 'операция', 'операции', 'операций')}. <button class="link inline" type="button" data-act="ignored">Показать</button>` : ''}</p>`;
   bind(screen, {
     preset: (el) => { r.preset = el.value; const pr = presetRange(el.value); if (pr) [r.from, r.to] = pr; renderReport(); },
     range: () => {
@@ -682,6 +765,7 @@ function renderReport() {
     bank: (el) => { r.bank = el.value; renderReport(); },
     work: (el) => { r.includeWork = el.checked; renderReport(); },
     queue: () => setTab('queue'),
+    ignored: () => { S.ops.tag = 'ignored'; S.ops.cat = 'all'; S.ops.q = ''; S.ops.range = { from: r.from, to: r.to }; setTab('ops'); },
     cat: (el) => {
       S.ops.cat = el.dataset.cat || 'none'; S.ops.tag = 'all'; S.ops.q = '';
       S.ops.range = { from: r.from, to: r.to };
@@ -739,14 +823,14 @@ function renderMore() {
     <details class="card fold" ${fold('rules')} data-fold="rules"><summary><h2>Правила</h2><span class="muted">${S.rules.length}</span></summary>
       <p class="muted small">Правило срабатывает при каждой загрузке выписки: операция с этим получателем сразу попадает в нужную категорию.</p>
       ${rules.length ? `<ul class="rules">${rules.map(r => `<li>
-        <span class="rule-text"><b>${esc(r.value)}</b>${r.op === 'contains' ? ' <span class="muted">(содержит)</span>' : ''}<br><span class="muted">${r.dir === 'in' ? 'поступление' : r.dir === 'out' ? 'трата' : 'любая'} → ${esc(catName(r.category))}</span></span>
+        <span class="rule-text"><b>${esc(r.value)}</b>${r.op === 'contains' ? ' <span class="muted">(содержит)</span>' : ''}<br><span class="muted">${r.dir === 'in' ? 'поступление' : r.dir === 'out' ? 'трата' : 'любая'} → ${r.ignore ? 'не учитывать' : esc(catName(r.category))}</span></span>
         <button class="x" type="button" data-act="rule-del" data-id="${esc(r.id)}" aria-label="Удалить правило «${esc(r.value)}»">Удалить</button></li>`).join('')}</ul>` : '<p class="muted">Правил пока нет. Они появятся, когда вы разберёте первые операции.</p>'}
       <form class="rule-add" data-submit="rule-add">
         <div class="group-h">Своё правило</div>
         <input id="nr-text" maxlength="60" placeholder="Текст из описания, например YANDEX" autocomplete="off" aria-label="Текст в описании">
         <div class="filter-row">
           <select id="nr-dir" aria-label="Направление"><option value="out">трата</option><option value="in">поступление</option><option value="any">любая</option></select>
-          <select id="nr-cat" aria-label="Категория">${S.cats.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</select>
+          <select id="nr-cat" aria-label="Категория">${S.cats.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}<option value="__ignore">— не учитывать —</option></select>
         </div>
         <button class="secondary small" type="submit">Добавить правило</button>
       </form>
@@ -844,10 +928,15 @@ function renderMore() {
     'rule-add': async () => {
       const text = $('#nr-text', screen).value.trim().toUpperCase().replace(/Ё/g, 'Е');
       if (text.length < 3) { toast('Введите хотя бы 3 буквы'); return; }
-      const rule = { id: uid(), op: 'contains', value: text, dir: $('#nr-dir', screen).value, category: $('#nr-cat', screen).value, tags: [], created: today() };
+      const catVal = $('#nr-cat', screen).value;
+      const rule = { id: uid(), op: 'contains', value: text, dir: $('#nr-dir', screen).value, category: catVal === '__ignore' ? null : catVal, ignore: catVal === '__ignore', tags: [], created: today() };
       S.rules.push(rule); reindex(); await db.put('rules', rule);
       const ch = [];
-      for (const t of S.txs) if (!t.category && ruleMatches(rule, t) && categoryFits(S.catMap.get(rule.category), t)) { t.category = rule.category; t.catBy = 'rule'; t.ruleId = rule.id; ch.push(t); }
+      for (const t of S.txs) {
+        if (!needsAnswer(t) || !ruleMatches(rule, t)) continue;
+        if (rule.ignore) { t.ignored = true; t.ruleId = rule.id; ch.push(t); }
+        else if (categoryFits(S.catMap.get(rule.category), t)) { t.category = rule.category; t.catBy = 'rule'; t.ruleId = rule.id; ch.push(t); }
+      }
       await saveTxs(ch);
       S.settings.openFold = 'rules'; render(); toast(ch.length ? `Правило добавлено и сразу разобрало ${ch.length}` : 'Правило добавлено');
     },
@@ -1038,7 +1127,8 @@ function reviewImport(res) {
         const txs = list.map(t => {
           const tx = { ...t, bank: st.bank, key: merchantKey(t.desc), importId, created: now, tags: [], comment: '', reimb: null, category: null, catBy: null };
           const sug = autoCategory(tx, S.sortedRules, S.catMap, autoCtx());
-          if (sug) { tx.category = sug.category; tx.catBy = sug.by; if (sug.ruleId) tx.ruleId = sug.ruleId; if (sug.tags && sug.tags.length) tx.tags = [...sug.tags]; }
+          if (sug && sug.ignore) { tx.ignored = true; tx.ruleId = sug.ruleId; }
+          else if (sug) { tx.category = sug.category; tx.catBy = sug.by; if (sug.ruleId) tx.ruleId = sug.ruleId; if (sug.tags && sug.tags.length) tx.tags = [...sug.tags]; }
           updateReimb(tx);
           return tx;
         });
@@ -1055,7 +1145,7 @@ function reviewImport(res) {
         if (more.length) await saveTxs(more);
         saved = true;
         closeSheet();
-        const left = txs.filter(t => !t.category).length;
+        const left = txs.filter(needsAnswer).length;
         toast(`Загружено ${txs.length}. ${left ? `Нужно разобрать: ${left}` : 'Всё разобрано автоматически'}`);
       },
     });
@@ -1076,7 +1166,7 @@ $('#file-in').addEventListener('change', async (e) => {
     if (await reviewImport(res)) any = true;
   }
   if (any) {
-    const left = S.txs.filter(t => !t.category).length;
+    const left = S.txs.filter(needsAnswer).length;
     setTab(left ? 'queue' : 'home');
   } else render();
 });

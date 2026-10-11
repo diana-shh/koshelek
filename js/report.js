@@ -14,10 +14,12 @@ export function buildReport({ txs, catMap, tagMap, from, to, includeWork, bank }
   const work = { total: 0, done: 0, pending: 0, count: 0, list: [] };
   const rows = [];
   let exp = 0, inc = 0, transfers = 0, uncat = 0, uncatSum = 0;
+  const ignored = [];
 
   for (const t of txs) {
     if (t.date < from || t.date > to) continue;
     if (bank && t.bank !== bank) continue;
+    if (t.ignored) { ignored.push(t); continue; }
     const c = t.category ? catMap.get(t.category) : null;
     if (c && c.type === 'transfer') { transfers++; continue; }
     const w = isWorkTx(t, tagMap);
@@ -51,7 +53,8 @@ export function buildReport({ txs, catMap, tagMap, from, to, includeWork, bank }
   const inCats = [...byInCat.values()].sort((a, b) => b.sum - a.sum);
   rows.sort((a, b) => a.date === b.date ? (a.time || '').localeCompare(b.time || '') : a.date.localeCompare(b.date));
   work.list.sort((a, b) => a.date.localeCompare(b.date));
-  return { from, to, months, exp, inc, cats, inCats, byMonth, catMonth, work, rows, transfers, uncat, uncatSum, includeWork, bank };
+  ignored.sort((a, b) => a.date.localeCompare(b.date));
+  return { from, to, months, exp, inc, cats, inCats, byMonth, catMonth, work, rows, transfers, uncat, uncatSum, includeWork, bank, ignored };
 }
 
 // ---------- Excel ----------
@@ -125,6 +128,19 @@ export async function exportXlsx(rep, { catMap, tagMap }) {
     setFormats(ws4, XLSX, { 4: MONEY });
     ws4['!cols'] = [{ wch: 11 }, { wch: 44 }, { wch: 24 }, { wch: 30 }, { wch: 14 }, { wch: 18 }];
     XLSX.utils.book_append_sheet(wb, ws4, 'Рабочие траты');
+  }
+
+  if (rep.ignored.length) {
+    const s5 = [['Не учитываются'], [period], ['Эти операции отмечены «не учитывать» и не входят в суммы выше.'], [],
+      ['Дата', 'Банк', 'Описание', 'Категория', 'Комментарий', 'Сумма, ₽']];
+    for (const t of rep.ignored) {
+      const c = t.category ? catMap.get(t.category) : null;
+      s5.push([dateDots(t.date), t.bank || '', prettyDesc(t.desc), c ? c.name : '', t.comment || '', t.amount / 100]);
+    }
+    const ws5 = XLSX.utils.aoa_to_sheet(s5);
+    setFormats(ws5, XLSX, { 5: MONEY });
+    ws5['!cols'] = [{ wch: 11 }, { wch: 12 }, { wch: 44 }, { wch: 24 }, { wch: 30 }, { wch: 14 }];
+    XLSX.utils.book_append_sheet(wb, ws5, 'Не учитываются');
   }
 
   const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });

@@ -1,11 +1,11 @@
 // Общие помощники: деньги, даты, экранирование, идентификаторы.
 
 export const MINUS = '−';
-const NF = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+const NF = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 const NF2 = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 /** Сумма в копейках → «1 234,5 ₽» без знака. */
-export const rub = (kop) => NF.format(Math.abs(kop) / 100) + ' ₽';
+export const rub = (kop) => (Math.abs(kop) % 100 ? NF2 : NF).format(Math.abs(kop) / 100) + '\u00a0₽';
 /** Сумма со знаком: «−1 234 ₽» / «+500 ₽». */
 export const money = (kop) => (kop < 0 ? MINUS : kop > 0 ? '+' : '') + rub(kop);
 export const rub2 = (kop) => NF2.format(kop / 100);
