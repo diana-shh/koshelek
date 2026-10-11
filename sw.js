@@ -1,6 +1,6 @@
 // Работа без интернета: все файлы приложения хранятся в кэше телефона.
 // При изменении любого файла увеличить VERSION — тогда телефон предложит обновиться.
-const VERSION = 'koshelek-v1';
+const VERSION = 'koshelek-v2';
 const FILES = [
   './',
   'index.html',
@@ -12,7 +12,8 @@ const FILES = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES)));
+  // cache: 'reload' — брать свежие файлы с сервера, а не из кэша браузера.
+  e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES.map(f => new Request(f, { cache: 'reload' })))));
 });
 
 self.addEventListener('activate', (e) => {

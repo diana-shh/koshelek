@@ -39,6 +39,8 @@
   --warn-ink: #6B4E00;
   --hint-bg: #E6F1FB;
   --hint-ink: #174A7A;
+  --ok-bg: #E3F4EA;
+  --ok-ink: #0F5C3D;
   --shadow: rgba(16, 28, 40, .14);
   --backdrop: rgba(12, 18, 24, .45);
   --font-display: "Unbounded", -apple-system, system-ui, sans-serif;
@@ -50,7 +52,7 @@
     --bg: #0E141A; --surface: #172029; --ink: #E7EDF2; --muted: #96A3B0; --line: #27333E;
     --track: #222D38; --axis: #3A4753; --accent: #F5C02E; --accent-ink: #1C1600;
     --pos: #34B27A; --bar: #D5DDE5; --bar-none: #56636F; --danger: #E77070;
-    --warn-bg: #3A3010; --warn-ink: #F5D77A; --hint-bg: #13293D; --hint-ink: #A9CDF0;
+    --warn-bg: #3A3010; --warn-ink: #F5D77A; --hint-bg: #13293D; --hint-ink: #A9CDF0; --ok-bg: #12301F; --ok-ink: #8FDCB4;
     --shadow: rgba(0, 0, 0, .5); --backdrop: rgba(0, 0, 0, .6);
     color-scheme: dark;
   }
@@ -59,7 +61,7 @@
   --bg: #0E141A; --surface: #172029; --ink: #E7EDF2; --muted: #96A3B0; --line: #27333E;
   --track: #222D38; --axis: #3A4753; --accent: #F5C02E; --accent-ink: #1C1600;
   --pos: #34B27A; --bar: #D5DDE5; --bar-none: #56636F; --danger: #E77070;
-  --warn-bg: #3A3010; --warn-ink: #F5D77A; --hint-bg: #13293D; --hint-ink: #A9CDF0;
+  --warn-bg: #3A3010; --warn-ink: #F5D77A; --hint-bg: #13293D; --hint-ink: #A9CDF0; --ok-bg: #12301F; --ok-ink: #8FDCB4;
   --shadow: rgba(0, 0, 0, .5); --backdrop: rgba(0, 0, 0, .6);
   color-scheme: dark;
 }
@@ -97,6 +99,10 @@ h1, h2, h3 { text-wrap: balance; }
 .note { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
 .note p { margin: 0; }
 .hint { margin: 0; background: var(--hint-bg); color: var(--hint-ink); border-radius: 12px; padding: 10px 12px; font-size: 14px; }
+.hint.ok { background: var(--ok-bg); color: var(--ok-ink); }
+.hint.bad { background: var(--warn-bg); color: var(--warn-ink); }
+.rule-box { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 12px; }
+.rule-box p { margin: 0; }
 .empty { background: var(--surface); border-radius: 16px; padding: 18px 16px; color: var(--muted); }
 .empty p { margin: 0 0 4px; }
 .empty b { color: var(--ink); }

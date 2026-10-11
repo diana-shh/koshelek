@@ -6,11 +6,11 @@ import {
   esc, hash, uid, normText, prettyDesc, parseMoney, saveFile, monthShort,
 } from './util.js';
 import { DEFAULT_CATEGORIES, DEFAULT_TAGS, BANKS } from './catalog.js';
-import { merchantKey, isGenericKey, autoCategory, sortRules, makeRule, ruleMatches, dirOf, categoryFits } from './categorize.js';
+import { merchantKey, isGenericKey, autoCategory, sortRules, makeRule, ruleMatches, dirOf, categoryFits, ruleScopes, suggestScope } from './categorize.js';
 import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
 import { buildReport, exportXlsx, chartPng, isWorkTx } from './report.js';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -59,11 +59,22 @@ async function load() {
   S.tags = m.tags || DEFAULT_TAGS.map(t => ({ ...t }));
   S.profiles = m.profiles || {};
   S.settings = m.settings || {};
+  // Новые категории из обновлений приложения — добавить, но не возвращать удалённые человеком.
+  const knownCats = new Set(S.settings.knownCats || S.cats.map(c => c.id));
+  for (const d of DEFAULT_CATEGORIES) {
+    if (knownCats.has(d.id) || S.cats.some(c => c.id === d.id)) continue;
+    const at = S.cats.findIndex(c => c.id === 'fees');
+    S.cats.splice(at >= 0 ? at : S.cats.findIndex(c => c.type !== 'out'), 0, { ...d });
+  }
+  const fun = S.cats.find(c => c.id === 'fun');
+  if (fun && fun.name === 'Развлечения и хобби') fun.name = 'Спорт, развлечения, хобби';
+  S.settings.knownCats = DEFAULT_CATEGORIES.map(c => c.id);
   S.txs = txs;
   S.rules = rules;
   S.imports = imports.sort((a, b) => b.at.localeCompare(a.at));
   reindex();
-  if (!m.categories) await db.setMeta('categories', S.cats);
+  await db.setMeta('categories', S.cats);
+  await db.setMeta('settings', S.settings);
   if (!m.tags) await db.setMeta('tags', S.tags);
 }
 const saveTxs = (list) => db.putMany('tx', list);
@@ -90,10 +101,53 @@ function applyRule(rule, exceptId) {
   return changed;
 }
 
-function findCounterpart(t) {
-  const d0 = new Date(t.date + 'T12:00:00').getTime();
-  return S.txs.find(o => o.id !== t.id && o.amount === -t.amount && (o.bank !== t.bank || o.account !== t.account)
-    && Math.abs(new Date(o.date + 'T12:00:00').getTime() - d0) <= 3 * 86400000) || null;
+const autoCtx = () => ({ owners: S.settings.owners || [], ownNumbers: S.settings.ownNumbers || [] });
+
+const BANK_ALIASES = [
+  ['Т-Банк', /T-?BANK|Т-?БАНК|TINKOFF|ТИНЬКОФФ/], ['Ozon Банк', /OZON|ОЗОН/], ['Сбербанк', /SBER|СБЕР/],
+  ['ВТБ', /(^|[^A-ZА-Я])(VTB|ВТБ)([^A-ZА-Я]|$)/], ['Альфа-Банк', /ALFA|АЛЬФА/], ['Яндекс', /YANDEX|ЯНДЕКС/],
+];
+/** Какой банк назван в описании перевода («Перевод в T-Bank»), кроме своего собственного. */
+function mentionedBank(t) {
+  const u = (t.desc + ' ' + (t.raw || '')).toUpperCase().replace(/Ё/g, 'Е');
+  for (const [b, re] of BANK_ALIASES) if (b !== t.bank && re.test(u)) return b;
+  return null;
+}
+const transferLike = (t) => /ПЕРЕВОД|ПОПОЛНЕНИЕ|СБП/.test((t.desc + ' ' + (t.raw || '')).toUpperCase().replace(/Ё/g, 'Е')) || /перевод|пополн/i.test(t.bankCategory || '');
+const stamp = (t) => new Date(t.date + 'T' + (t.time || '12:00') + ':00').getTime();
+
+/** Встречная операция в другом банке: та же сумма с другим знаком, почти в то же время. */
+function findCounterpart(t, used = new Set()) {
+  if (!transferLike(t)) return null;
+  const mt = mentionedBank(t);
+  const win = t.time ? 15 * 60000 : 86400000;
+  return S.txs.find(o => o.id !== t.id && !used.has(o.id) && o.amount === -t.amount
+    && o.bank !== t.bank && o.bank !== 'Вручную' && t.bank !== 'Вручную'
+    && (!o.category || o.category === 'own') && transferLike(o)
+    && Math.abs(stamp(o) - stamp(t)) <= (o.time ? win : 86400000)
+    && (!mt || mt === o.bank) && (!mentionedBank(o) || mentionedBank(o) === t.bank)) || null;
+}
+
+/** Разложить всё, что ещё без категории: новые правила, свои переводы, пары между банками. */
+function autoRecheck() {
+  const changed = [];
+  for (const t of S.txs) {
+    if (t.category) continue;
+    const sug = autoCategory(t, S.sortedRules, S.catMap, autoCtx());
+    if (sug) { t.category = sug.category; t.catBy = sug.by; if (sug.ruleId) t.ruleId = sug.ruleId; changed.push(t); }
+  }
+  const used = new Set(S.txs.filter(t => t.pairId).map(t => t.id));
+  for (const t of S.txs) {
+    if (t.category || used.has(t.id)) continue;
+    const o = findCounterpart(t, used);
+    if (!o) continue;
+    t.category = 'own'; t.catBy = 'pair'; t.pairId = o.id;
+    if (!o.category) { o.category = 'own'; o.catBy = 'pair'; }
+    o.pairId = t.id;
+    used.add(t.id); used.add(o.id);
+    changed.push(t, o);
+  }
+  return changed;
 }
 
 // ---------- общий интерфейс ----------
@@ -362,7 +416,7 @@ function editTx(t) {
       <div class="tx-head">
         <div class="big ${t.amount > 0 ? 'pos' : ''}">${money(t.amount)}</div>
         <div class="muted">${esc(dateRu(t.date))}${t.time ? ', ' + esc(t.time) : ''} · ${esc(t.bank || 'вручную')}${t.account ? ' ' + esc(t.account) : ''}</div>
-        <div class="raw">${esc(t.desc || 'Без описания')}</div>
+        <div class="raw">${esc(t.raw || t.desc || 'Без описания')}</div>
         ${t.bankCategory ? `<div class="muted small">Категория банка: «${esc(t.bankCategory)}»${t.mcc ? ` · MCC ${esc(t.mcc)}` : ''}</div>` : (t.mcc ? `<div class="muted small">MCC ${esc(t.mcc)}</div>` : '')}
       </div>
     `}
@@ -378,7 +432,7 @@ function editTx(t) {
       <input type="radio" name="reimb" id="r-d" value="done" ${t && t.reimb === 'done' ? 'checked' : ''}><label for="r-d">Возмещено</label>
     </fieldset>
     <label class="field" for="e-comment">Комментарий<input id="e-comment" maxlength="200" value="${esc(t ? t.comment || '' : '')}" placeholder="Например, поездка к поставщику" autocomplete="off"></label>
-    ${canRule ? `<label class="check"><input type="checkbox" id="e-rule" ${sameKey ? 'checked' : ''}><span>Запомнить: всегда относить «${esc(t.key)}» к выбранной категории${sameKey ? ` (ещё ${sameKey} ${plural(sameKey, 'такая операция', 'такие операции', 'таких операций')})` : ''}</span></label>` : ''}
+    ${canRule ? ruleBoxHtml('e', t.key, sameKey > 0, sameKey) : ''}
     <p class="err" id="e-err" hidden></p>
     <button class="primary" type="submit">Сохранить</button>
     ${t ? `<div class="del-zone"><button class="text-danger" type="button" data-act="del" id="e-del">Удалить операцию</button>
@@ -433,8 +487,8 @@ function editTx(t) {
       const changed = [target];
       const ruleBox = $('#e-rule', sheet);
       if (ruleBox && ruleBox.checked && target.category) {
-        const rule = makeRule(target, target.category);
-        S.rules = S.rules.filter(r => !(r.op === 'equals' && r.value === rule.value && r.dir === rule.dir));
+        const rule = makeRule(target, target.category, $('#e-scope', sheet).value);
+        S.rules = S.rules.filter(r => !(r.op === rule.op && r.value === rule.value && r.dir === rule.dir));
         S.rules.push(rule); reindex();
         await db.put('rules', rule);
         target.catBy = 'manual'; target.ruleId = rule.id;
@@ -452,13 +506,26 @@ function editTx(t) {
   if (isNew) setTimeout(() => { const a = $('#e-amount', sheet); if (a) a.focus(); }, 50);
 }
 
+/** «Запомнить и больше не спрашивать про [PEREKRESTOK …]» — с выбором, на сколько широко действует правило. */
+function ruleBoxHtml(prefix, key, checked, more = 0) {
+  const scopes = ruleScopes(key);
+  const sug = suggestScope(key);
+  return `<div class="rule-box">
+    <label class="check"><input type="checkbox" id="${prefix}-rule" ${checked ? 'checked' : ''}><span>Запомнить и больше не спрашивать${more ? ` (ещё ${more} ${plural(more, 'такая операция', 'такие операции', 'таких операций')})` : ''}</span></label>
+    ${scopes.length > 1 ? `<label class="field" for="${prefix}-scope">Для каких операций
+      <select id="${prefix}-scope">${scopes.map(sc => `<option value="${esc(sc)}" ${sc === sug ? 'selected' : ''}>${esc(sc)}${sc === key ? '' : ' …'}</option>`).join('')}</select></label>
+      <p class="muted small">«…» — все, у кого описание начинается так: например, все магазины сети.</p>`
+      : `<input type="hidden" id="${prefix}-scope" value="${esc(key)}"><p class="muted small">Для всех операций «${esc(key)}».</p>`}
+  </div>`;
+}
+
 // ---------- Разобрать ----------
 function queueGroups() {
   const groups = new Map();
   for (const t of S.txs) {
     if (t.category) continue;
-    const gkBase = t.key + '|' + dirOf(t);
-    const gk = (isGenericKey(t.key) || S.queue.split.has(gkBase)) ? 'tx:' + t.id : gkBase;
+    const gkBase = (isGenericKey(t.key) ? 'g:' + normText(prettyDesc(t.desc)).replace(/[\d*•№]+/g, '').replace(/\s+/g, ' ') : t.key) + '|' + dirOf(t);
+    const gk = S.queue.split.has(gkBase) ? 'tx:' + t.id : gkBase;
     if (!groups.has(gk)) groups.set(gk, { id: gk, base: gkBase, key: t.key, dir: dirOf(t), items: [] });
     groups.get(gk).items.push(t);
   }
@@ -485,7 +552,7 @@ function renderQueue() {
   const g = groups[0];
   const t0 = g.items[0];
   const dates = g.items.map(t => t.date).sort();
-  const hintCat = g.single ? findCounterpart(t0) : null;
+  const hintCat = g.items.length === 1 ? findCounterpart(t0) : null;
   const preselect = hintCat ? 'own' : null;
   const generic = isGenericKey(g.key);
   screen.innerHTML = `<header class="scr-head"><h1>Разобрать</h1><span class="muted">осталось ${total}</span></header>
@@ -501,7 +568,7 @@ function renderQueue() {
         <fieldset class="chips" aria-label="Метки">${chipsHtml('qtag', S.tags, [], 'checkbox')}</fieldset>
         <label class="field" for="q-comment">Комментарий${g.items.length > 1 ? ' (ко всем операциям группы)' : ''}<input id="q-comment" maxlength="200" autocomplete="off"></label>
       </details>
-      ${!generic ? `<label class="check"><input type="checkbox" id="q-rule" checked><span>Запомнить: всегда относить «${esc(g.key)}» сюда</span></label>` : `<p class="muted small">Это общий перевод без имени получателя, поэтому правило не создаётся.</p>`}
+      ${!generic ? ruleBoxHtml('q', g.key, true) : `<p class="muted small">В описании нет получателя, поэтому правило не создаётся${g.items.length > 1 ? '. Если операции разные, нажмите «Разобрать по одной»' : ''}.</p>`}
       <p class="err" id="q-err" hidden></p>
       <button class="primary" type="button" data-act="done">Готово</button>
       <div class="btn-row center">
@@ -529,8 +596,8 @@ function renderQueue() {
       }
       const rb = $('#q-rule', screen);
       if (rb && rb.checked) {
-        const rule = makeRule(t0, c.value);
-        S.rules = S.rules.filter(r => !(r.op === 'equals' && r.value === rule.value && r.dir === rule.dir));
+        const rule = makeRule(t0, c.value, $('#q-scope', screen).value);
+        S.rules = S.rules.filter(r => !(r.op === rule.op && r.value === rule.value && r.dir === rule.dir));
         S.rules.push(rule); reindex();
         await db.put('rules', rule);
         for (const t of g.items) t.ruleId = rule.id;
@@ -854,11 +921,12 @@ function reviewImport(res) {
       let txs = st.txs.map(t => ({ ...t, amount: st.invert ? -t.amount : t.amount }));
       txs = fingerprint(txs, st.bank, st.account);
       const exist = new Set(S.byId.keys());
-      const like = new Set(S.txs.map(t => `${t.bank}|${t.date}|${t.amount}`));
+      // «Похожие» — та же карта, дата и сумма, но другое описание: обычно та же операция из выписки другого вида.
+      const like = new Set(S.txs.map(t => `${t.bank}|${t.account || ''}|${t.date}|${t.amount}`));
       const fresh = [], dup = [], similar = [];
       for (const t of txs) {
         if (exist.has(t.id)) dup.push(t);
-        else if (like.has(`${st.bank}|${t.date}|${t.amount}`)) similar.push(t);
+        else if (like.has(`${st.bank}|${t.account || ''}|${t.date}|${t.amount}`)) similar.push(t);
         else fresh.push(t);
       }
       return { txs, fresh, dup, similar };
@@ -869,9 +937,21 @@ function reviewImport(res) {
       const toSave = st.skipLike ? p.fresh : p.fresh.concat(p.similar);
       const dates = p.txs.map(t => t.date).sort();
       let auto = 0;
-      for (const t of toSave) if (autoCategory({ ...t, key: merchantKey(t.desc) }, S.sortedRules, S.catMap)) auto++;
+      const ctx = autoCtx();
+      if (res.owner) ctx.owners = [...ctx.owners, res.owner];
+      if (res.ownNumbers) ctx.ownNumbers = [...ctx.ownNumbers, ...res.ownNumbers];
+      for (const t of toSave) if (autoCategory({ ...t, key: merchantKey(t.desc) }, S.sortedRules, S.catMap, ctx)) auto++;
       const exp = p.txs.filter(t => t.amount < 0).reduce((s, t) => s - t.amount, 0);
       const inc = p.txs.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+      // Сверка с итогами, которые банк печатает в выписке.
+      let check = '';
+      if (res.totals && (res.totals.in != null || res.totals.out != null)) {
+        const okIn = res.totals.in == null || res.totals.in === inc;
+        const okOut = res.totals.out == null || res.totals.out === exp;
+        check = okIn && okOut
+          ? `<p class="hint ok">Сверено с итогами выписки: поступления и списания совпадают до копейки.</p>`
+          : `<p class="hint bad">Суммы не сходятся с итогами выписки. В выписке: поступления ${rub(res.totals.in || 0)}, списания ${rub(res.totals.out || 0)}. Прочитано: ${rub(inc)} и ${rub(exp)}. Часть операций могла не распознаться — пришлите этот файл Claude, чтобы поправить разбор.</p>`;
+      }
       const mapHtml = header ? `<details class="more" ${st.showMap ? 'open' : ''}><summary>Колонки таблицы${res.known ? ' (как в прошлый раз)' : ''}</summary>
           <p class="muted small">Проверьте, что кошелёк правильно понял, где дата, сумма и описание. Настройка запомнится для следующих выписок этого банка.</p>
           ${['date', 'amount', 'debit', 'credit', 'direction', 'desc', 'category', 'mcc'].map(role => `
@@ -896,12 +976,13 @@ function reviewImport(res) {
             <div><span class="eyebrow">Расходы</span><b>${MINUS}${rub(exp)}</b></div>
             <div><span class="eyebrow">Поступления</span><b class="pos">+${rub(inc)}</b></div>
           </div>
+          ${check}
           <ul class="plain">
             <li><span>Новых</span><b>${p.fresh.length}</b></li>
             ${p.dup.length ? `<li><span>Уже были загружены, пропущу</span><b>${p.dup.length}</b></li>` : ''}
             ${p.similar.length ? `<li><span>Похожи на загруженные раньше (та же дата, сумма и банк)</span><b>${p.similar.length}</b></li>` : ''}
             <li><span>Категория определится сама</span><b>${auto}</b></li>
-            <li><span>Спрошу у вас</span><b>${toSave.length - auto}</b></li>
+            <li><span>Спрошу у вас (часть ещё найдётся как переводы между своими счетами)</span><b>${toSave.length - auto}</b></li>
           </ul>
           ${p.similar.length ? `<label class="check"><input type="checkbox" id="imp-like" ${st.skipLike ? 'checked' : ''} data-change="like"><span>Не загружать похожие: скорее всего, это те же операции из другой выписки</span></label>` : ''}
           <label class="check"><input type="checkbox" id="imp-inv" ${st.invert ? 'checked' : ''} data-change="inv"><span>Поменять знак у всех сумм (если расходы показаны как поступления)</span></label>
@@ -945,11 +1026,18 @@ function reviewImport(res) {
         if (!st.bank) { const e = $('#imp-err', sheet); e.textContent = 'Выберите банк: так операции разных банков не перепутаются.'; e.hidden = false; return; }
         const p = prepared();
         const list = st.skipLike ? p.fresh : p.fresh.concat(p.similar);
+        if (res.owner) {
+          const owners = S.settings.owners || [];
+          if (!owners.some(o => o.first === res.owner.first && o.middle === res.owner.middle)) owners.push(res.owner);
+          S.settings.owners = owners;
+        }
+        if (res.ownNumbers && res.ownNumbers.length) S.settings.ownNumbers = [...new Set([...(S.settings.ownNumbers || []), ...res.ownNumbers])];
+        await saveSettings();
         const importId = 'i' + uid();
         const now = new Date().toISOString();
         const txs = list.map(t => {
           const tx = { ...t, bank: st.bank, key: merchantKey(t.desc), importId, created: now, tags: [], comment: '', reimb: null, category: null, catBy: null };
-          const sug = autoCategory(tx, S.sortedRules, S.catMap);
+          const sug = autoCategory(tx, S.sortedRules, S.catMap, autoCtx());
           if (sug) { tx.category = sug.category; tx.catBy = sug.by; if (sug.ruleId) tx.ruleId = sug.ruleId; if (sug.tags && sug.tags.length) tx.tags = [...sug.tags]; }
           updateReimb(tx);
           return tx;
@@ -963,6 +1051,8 @@ function reviewImport(res) {
           await db.setMeta('profiles', S.profiles);
         }
         S.txs.push(...txs); S.imports.unshift(imp); reindex();
+        const more = autoRecheck();
+        if (more.length) await saveTxs(more);
         saved = true;
         closeSheet();
         const left = txs.filter(t => !t.category).length;

@@ -14,13 +14,15 @@ export const DEFAULT_CATEGORIES = [
   { id: 'health', name: 'Здоровье и аптеки', type: 'out' },
   { id: 'beauty', name: 'Красота', type: 'out' },
   { id: 'clothes', name: 'Одежда и обувь', type: 'out' },
-  { id: 'fun', name: 'Развлечения и хобби', type: 'out' },
+  { id: 'fun', name: 'Спорт, развлечения, хобби', type: 'out' },
   { id: 'subs', name: 'Подписки', type: 'out' },
   { id: 'travel', name: 'Путешествия', type: 'out' },
   { id: 'edu', name: 'Образование', type: 'out' },
   { id: 'gifts', name: 'Подарки и цветы', type: 'out' },
   { id: 'p2p_out', name: 'Переводы людям', type: 'out' },
   { id: 'cash', name: 'Снятие наличных', type: 'out' },
+  { id: 'loans', name: 'Кредиты и рассрочки', type: 'out' },
+  { id: 'gov', name: 'Налоги, штрафы, госуслуги', type: 'out' },
   { id: 'fees', name: 'Комиссии и проценты', type: 'out' },
   { id: 'other', name: 'Прочие расходы', type: 'out' },
   { id: 'salary', name: 'Зарплата', type: 'in' },
@@ -38,7 +40,7 @@ export const DEFAULT_TAGS = [
   { id: 'work', name: 'Рабочая', reimb: true },
 ];
 
-export const BANKS = ['Сбербанк', 'Т-Банк', 'Альфа-Банк', 'ВТБ'];
+export const BANKS = ['Сбербанк', 'Т-Банк', 'Ozon Банк', 'Альфа-Банк', 'ВТБ'];
 
 // Коды MCC (вид торговой точки) → категория.
 const MCC_LIST = [
@@ -75,32 +77,77 @@ export function mccCategory(mcc) {
 // Названия категорий, которые банки пишут в выписках → наша категория.
 // Размытые («Переводы», «Прочие операции», «Пополнения») не сопоставляются — по ним приложение спросит.
 const BANK_CAT = [
-  [/супермаркет|продукт|гипермаркет|магазины продукт/, 'food'],
+  [/супермаркет|продукт|гипермаркет/, 'food'],
   [/ресторан|кафе|фастфуд|фаст-фуд|кофейн|бары/, 'cafe'],
   [/маркетплейс/, 'market'],
   [/такси/, 'taxi'],
-  [/транспорт|метро|ж\/д|железнодорож|автобус/, 'transport'],
-  [/топливо|азс|бензин|автоуслуг|автомобил|парковк|каршеринг|штрафы гибдд/, 'auto'],
-  [/жкх|коммунал|квартплат|дом и ремонт|ремонт|мебел|хозтовар|товары для дома/, 'home'],
-  [/связь|мобильн|интернет|телеком|телефон/, 'connect'],
+  [/^транспорт|метро|ж\/д|железнодорож|автобус/, 'transport'],
+  [/топливо|азс|бензин|автоуслуг|автомобил|парковк|каршеринг/, 'auto'],
+  [/^жкх$|квартплат|дом и ремонт|ремонт|мебел|хозтовар|товары для дома|все для дома/, 'home'],
+  [/^связь|мобильн|^интернет|телеком/, 'connect'],
   [/аптек|медицин|здоровье|клиник|стоматолог/, 'health'],
   [/красота|салон|косметик|парфюм/, 'beauty'],
   [/одежда|обувь|аксессуар/, 'clothes'],
-  [/развлечен|кино|театр|музе|хобби|спорт|книг|игр|отдых/, 'fun'],
-  [/подписк|цифровые товары|сервисы/, 'subs'],
+  [/развлечен|отдых|кино|театр|музе|хобби|спорт|книг/, 'fun'],
+  [/подписк|цифровые товары/, 'subs'],
   [/путешеств|отел|гостиниц|авиа|туризм|турагент/, 'travel'],
   [/образован|обучен|курсы/, 'edu'],
   [/цвет|подарк|сувенир/, 'gifts'],
-  [/наличн.*снят|снятие наличн|банкомат/, 'cash'],
+  [/выдача наличных|снятие наличн|наличные в банкомат/, 'cash'],
+  [/налог|штраф|госуслуг|государств/, 'gov'],
   [/комисси|проценты по кредит|обслуживание/, 'fees'],
   [/кэшбэк|кешбэк|кешбек|бонус|начисление процентов|проценты на остаток|проценты по вклад/, 'cashback'],
   [/зарплат|заработн/, 'salary'],
   [/возврат/, 'refund'],
 ];
+// Сводные категории банка, по которым нельзя понять суть («Коммунальные платежи, связь, интернет» — это и ЖКХ, и телефон).
+const BANK_CAT_AMBIGUOUS = /коммунальные платежи, связь|прочие|перевод|пополнени|внесение наличных|оплата по qr/;
 
 export function bankCategory(name) {
   const s = String(name ?? '').toLowerCase().replace(/ё/g, 'е').trim();
-  if (!s) return null;
+  if (!s || BANK_CAT_AMBIGUOUS.test(s)) return null;
   for (const [re, cat] of BANK_CAT) if (re.test(s)) return cat;
+  return null;
+}
+
+// Известные магазины и сервисы → категория. Сверяется по словам описания (латиница и кириллица).
+const KNOWN = [
+  ['taxi', ['YANDEX 4121', 'YANDEX GO', 'YANDEX TAXI', 'ЯНДЕКС ТАКСИ', 'ЯНДЕКС GO', 'UBER', 'CITYMOBIL', 'MAXIM']],
+  ['transport', ['METRO', 'LK METRO', 'MOSMETRO', 'CPPK', 'ЦППК', 'MOSGORTRANS', 'TROIKA', 'ТРОЙКА', 'AEROEXPRESS', 'AEROEXPRESS TRAIN', 'RZD', 'РЖД', 'YANDEX 4111', 'МЕТРОПОЛИТЕН']],
+  ['food', ['PEREKRESTOK', 'ПЕРЕКРЕСТОК', 'PYATEROCHKA', 'PYATYOROCHKA', 'ПЯТЕРОЧКА', 'MAGNIT MM', 'MAGNIT', 'МАГНИТ', 'VKUSVILL', 'ВКУСВИЛЛ', 'VV KKM', 'SAMOKAT', 'САМОКАТ', 'AUCHAN', 'АШАН', 'LENTA', 'ЛЕНТА', 'DIXY', 'DIKSI', 'ДИКСИ', 'SPAR', 'AZBUKA VKUSA', 'CHIZHIK', 'ЧИЖИК', 'EVO PRODUKTY', 'PRODUKTY', 'ПРОДУКТЫ', 'OVOSCHI', 'FRUKTY', 'ОВОЩИ', 'EVO KONDITERKA', 'BELKA ORESHKI', 'METRO CC', 'GLOBUS', 'ГЛОБУС', 'VERNYJ', 'ВЕРНЫЙ', 'MAGNOLIYA', 'KRASNOE BELOE', 'КРАСНОЕ БЕЛОЕ']],
+  ['cafe', ['KAFE', 'CAFE', 'CAFFE', 'КАФЕ', 'KOFE', 'COFFEE', 'КОФЕ', 'COFIX', 'KOFEJNYA', 'KOFEYNYA', 'КОФЕЙНЯ', 'DODO PIZZA', 'PIZZA', 'ПИЦЦА', 'BURGER', 'VKUSNO I TOCHKA', 'ВКУСНО И ТОЧКА', 'TEREMOK', 'ТЕРЕМОК', 'SHOKOLADNITSA', 'STARBUCKS', 'BRATYA KARAVAEVY', 'KAFETERIY', 'RESTORAN', 'РЕСТОРАН', 'SUSHI', 'СУШИ', 'STOLOVAYA', 'СТОЛОВАЯ', 'KFC', 'ROSTICS']],
+  ['connect', ['T2', 'TELE2', 'ТЕЛЕ2', 'Т2', 'BEELINE', 'БИЛАЙН', 'MEGAFON', 'МЕГАФОН', 'MGTS', 'МГТС', 'ROSTELECOM', 'РОСТЕЛЕКОМ', 'MTS MOBILE', 'МТС']],
+  ['health', ['APTEKA', 'АПТЕКА', 'APTECHNOE', 'APTECHNYJ', 'RIGLA', 'РИГЛА', 'GORZDRAV', 'ГОРЗДРАВ', 'STOLICHKI', 'СТОЛИЧКИ', 'ZDOROV RU', 'ZDRAVSITI', 'INVITRO', 'ИНВИТРО', 'GEMOTEST', 'KLINIKA', 'КЛИНИКА', 'STOMATOLOG', 'СТОМАТОЛОГ']],
+  ['beauty', ['PARIKMAKHERSKAYA', 'ПАРИКМАХЕРСКАЯ', 'BARBERSHOP', 'BARBER', 'SALON KRASOTY', 'САЛОН КРАСОТЫ', 'ZOLOTOE YABLOKO', 'ЗОЛОТОЕ ЯБЛОКО', 'LETUAL', 'ЛЭТУАЛЬ']],
+  ['market', ['OZON', 'ОЗОН', 'ПЛАТФОРМЕ OZON', 'WILDBERRIES', 'WB WILDBERRIES', 'ВАЙЛДБЕРРИЗ', 'LAMODA', 'ЛАМОДА', 'AVITO', 'АВИТО', 'YANDEX MARKET', 'ЯНДЕКС МАРКЕТ', 'MEGAMARKET', 'ALIEXPRESS']],
+  ['travel', ['KUPIBILET', 'ONETWOTRIP', 'AVIASALES', 'AEROFLOT', 'АЭРОФЛОТ', 'POBEDA', 'ПОБЕДА', 'OSTROVOK', 'TUTU', 'YANDEX TRAVEL', 'S7']],
+  ['home', ['LEMANA', 'LEMANAPRO', 'LEMANAPROGPB', 'LEROY MERLIN', 'ЛЕРУА', 'OBI', 'IKEA', 'HOFF', 'GALAMART', 'ГАЛАМАРТ', 'FIX PRICE', 'ФИКС ПРАЙС']],
+  ['subs', ['YANDEX PLUS', 'ЯНДЕКС ПЛЮС', 'KINOPOISK', 'КИНОПОИСК', 'IVI', 'OKKO', 'APPLE COM BILL', 'ITUNES', 'SPOTIFY']],
+  ['fun', ['SPORT', 'СПОРТ', 'SQUASH', 'FITNESS', 'ФИТНЕС', 'KINO', 'CINEMA', 'КИНОТЕАТР', 'TEATR', 'ТЕАТР', 'MUZEJ', 'МУЗЕЙ', 'PLATFORMA SPORT']],
+  ['gov', ['GOSUSLUGI', 'ГОСУСЛУГИ', 'FNS', 'ФНС', 'GIBDD', 'ГИБДД', 'НАЛОГ']],
+];
+const KNOWN_LIST = [];
+for (const [cat, phrases] of KNOWN) for (const p of phrases) KNOWN_LIST.push([' ' + p + ' ', cat]);
+KNOWN_LIST.sort((a, b) => b[0].length - a[0].length);
+
+// Смысл операции по самому описанию — для банков, которые не пишут категорию.
+const DESC_PATTERNS = [
+  [/ПОГАШЕНИЕ КРЕДИТА|РЕГУЛЯРНЫЙ ПЛАТЕЖ|ПЛАТЕЖ ПО КРЕДИТУ|ПОГАШЕНИЕ ЗАДОЛЖЕННОСТИ ПО КРЕДИТУ/, 'loans'],
+  [/СНЯТИЕ НАЛИЧНЫХ|ВЫДАЧА НАЛИЧНЫХ/, 'cash'],
+  [/КЭШБЭК|КЕШБЭК|КЕШБЕК|CASHBACK|ПРОЦЕНТЫ НА ОСТАТОК|НАЧИСЛЕНИЕ ПРОЦЕНТОВ|ВЫПЛАТА ПРОЦЕНТОВ/, 'cashback'],
+  [/ЗАРАБОТНАЯ ПЛАТА|ЗАРПЛАТА|АВАНС ЗА|ОПЛАТА ТРУДА/, 'salary'],
+  [/ВОЗВРАТ ОПЛАТЫ|ВОЗВРАТ ПОКУПКИ|ОТМЕНА ПОКУПКИ|ОТМЕНА ВОЗВРАТА/, 'refund'],
+];
+
+export const wordsOf = (desc) => ' ' + String(desc ?? '').toUpperCase().replace(/Ё/g, 'Е').replace(/[^A-ZА-Я0-9]+/g, ' ').trim() + ' ';
+
+export function descCategory(desc) {
+  const u = String(desc ?? '').toUpperCase().replace(/Ё/g, 'Е');
+  for (const [re, cat] of DESC_PATTERNS) if (re.test(u)) return cat;
+  return null;
+}
+export function knownCategory(desc) {
+  const w = wordsOf(desc);
+  for (const [p, cat] of KNOWN_LIST) if (w.includes(p)) return cat;
   return null;
 }
