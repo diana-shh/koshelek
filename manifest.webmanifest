@@ -1,0 +1,16 @@
+{
+  "name": "Кошелёк",
+  "short_name": "Кошелёк",
+  "description": "Личный учёт расходов по банковским выпискам. Данные хранятся только на телефоне.",
+  "lang": "ru",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#F1F4F6",
+  "theme_color": "#F1F4F6",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

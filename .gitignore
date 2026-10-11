@@ -1,0 +1,7 @@
+.DS_Store
+*.pdf
+*.csv
+*.xlsx
+*.xls
+*.json
+!manifest.webmanifest
