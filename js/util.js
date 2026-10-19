@@ -126,7 +126,7 @@ export const cleanText = (v) => String(v ?? '').replace(/\s+/g, ' ').trim();
 export function prettyDesc(desc) {
   const s = cleanText(desc)
     .replace(/Операция по (карте|сч[её]ту)\s*[*•]+\s*\d+\.?/gi, '')
-    .replace(/\b\d{9,}\b/g, '')
+    .replace(/(^|[^+\d])\d{9,}\b/g, '$1')   // длинные номера убрать, телефон «+7…» оставить
     .replace(/\s{2,}/g, ' ')
     .replace(/([A-Za-zА-Яа-яЁё]{3})\.$/, '$1')
     .replace(/[,;\s]+$/, '')

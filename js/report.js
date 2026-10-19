@@ -106,40 +106,40 @@ export async function exportXlsx(rep, { catMap, tagMap }) {
 
   const tagNames = (t) => (t.tags || []).map(id => tagMap.get(id) ? tagMap.get(id).name : '').filter(Boolean).join(', ');
   const reimbText = (t) => t.reimb === 'done' ? 'возмещено' : t.reimb === 'pending' ? 'ждёт возмещения' : '';
-  const s3 = [['Дата', 'Банк', 'Счёт', 'Описание', 'Категория', 'Метки', 'Комментарий', 'Сумма, ₽', 'Возмещение']];
+  const s3 = [['Дата', 'Время', 'Банк', 'Счёт', 'Описание', 'Категория', 'Метки', 'Комментарий', 'Сумма, ₽', 'Возмещение']];
   for (const t of rep.rows) {
     const c = t.category ? catMap.get(t.category) : null;
-    s3.push([dateDots(t.date), t.bank || '', t.account || '', prettyDesc(t.desc), c ? c.name : 'Без категории',
+    s3.push([dateDots(t.date), t.time || '', t.bank || '', t.account || '', prettyDesc(t.desc), c ? c.name : 'Без категории',
       tagNames(t), t.comment || '', t.amount / 100, reimbText(t)]);
   }
   const ws3 = XLSX.utils.aoa_to_sheet(s3);
-  setFormats(ws3, XLSX, { 7: MONEY });
-  ws3['!cols'] = [{ wch: 11 }, { wch: 12 }, { wch: 8 }, { wch: 44 }, { wch: 24 }, { wch: 14 }, { wch: 30 }, { wch: 14 }, { wch: 16 }];
+  setFormats(ws3, XLSX, { 8: MONEY });
+  ws3['!cols'] = [{ wch: 11 }, { wch: 7 }, { wch: 12 }, { wch: 8 }, { wch: 44 }, { wch: 24 }, { wch: 14 }, { wch: 30 }, { wch: 14 }, { wch: 16 }];
   XLSX.utils.book_append_sheet(wb, ws3, 'Операции');
 
   if (rep.work.list.length) {
     const s4 = [['Рабочие траты'], [period], [`Всего ${rub(rep.work.total)} · возмещено ${rub(rep.work.done)} · ждут ${rub(rep.work.pending)}`], [],
-      ['Дата', 'Описание', 'Категория', 'Комментарий', 'Сумма, ₽', 'Статус']];
+      ['Дата', 'Время', 'Описание', 'Категория', 'Комментарий', 'Сумма, ₽', 'Статус']];
     for (const t of rep.work.list) {
       const c = t.category ? catMap.get(t.category) : null;
-      s4.push([dateDots(t.date), prettyDesc(t.desc), c ? c.name : 'Без категории', t.comment || '', -t.amount / 100, reimbText(t) || 'ждёт возмещения']);
+      s4.push([dateDots(t.date), t.time || '', prettyDesc(t.desc), c ? c.name : 'Без категории', t.comment || '', -t.amount / 100, reimbText(t) || 'ждёт возмещения']);
     }
     const ws4 = XLSX.utils.aoa_to_sheet(s4);
-    setFormats(ws4, XLSX, { 4: MONEY });
-    ws4['!cols'] = [{ wch: 11 }, { wch: 44 }, { wch: 24 }, { wch: 30 }, { wch: 14 }, { wch: 18 }];
+    setFormats(ws4, XLSX, { 5: MONEY });
+    ws4['!cols'] = [{ wch: 11 }, { wch: 7 }, { wch: 44 }, { wch: 24 }, { wch: 30 }, { wch: 14 }, { wch: 18 }];
     XLSX.utils.book_append_sheet(wb, ws4, 'Рабочие траты');
   }
 
   if (rep.ignored.length) {
     const s5 = [['Не учитываются'], [period], ['Эти операции отмечены «не учитывать» и не входят в суммы выше.'], [],
-      ['Дата', 'Банк', 'Описание', 'Категория', 'Комментарий', 'Сумма, ₽']];
+      ['Дата', 'Время', 'Банк', 'Описание', 'Категория', 'Комментарий', 'Сумма, ₽']];
     for (const t of rep.ignored) {
       const c = t.category ? catMap.get(t.category) : null;
-      s5.push([dateDots(t.date), t.bank || '', prettyDesc(t.desc), c ? c.name : '', t.comment || '', t.amount / 100]);
+      s5.push([dateDots(t.date), t.time || '', t.bank || '', prettyDesc(t.desc), c ? c.name : '', t.comment || '', t.amount / 100]);
     }
     const ws5 = XLSX.utils.aoa_to_sheet(s5);
-    setFormats(ws5, XLSX, { 5: MONEY });
-    ws5['!cols'] = [{ wch: 11 }, { wch: 12 }, { wch: 44 }, { wch: 24 }, { wch: 30 }, { wch: 14 }];
+    setFormats(ws5, XLSX, { 6: MONEY });
+    ws5['!cols'] = [{ wch: 11 }, { wch: 7 }, { wch: 12 }, { wch: 44 }, { wch: 24 }, { wch: 30 }, { wch: 14 }];
     XLSX.utils.book_append_sheet(wb, ws5, 'Не учитываются');
   }
 

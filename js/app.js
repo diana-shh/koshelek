@@ -6,11 +6,11 @@ import {
   esc, hash, uid, normText, prettyDesc, parseMoney, saveFile, monthShort,
 } from './util.js';
 import { DEFAULT_CATEGORIES, DEFAULT_TAGS, BANKS } from './catalog.js';
-import { merchantKey, isGenericKey, autoCategory, sortRules, makeRule, ruleMatches, dirOf, categoryFits, ruleScopes, suggestScope } from './categorize.js';
+import { merchantKey, isGenericKey, autoCategory, sortRules, makeRule, ruleMatches, dirOf, categoryFits, ruleScopes, suggestScope, findCounterpart } from './categorize.js';
 import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
 import { buildReport, exportXlsx, chartPng, isWorkTx } from './report.js';
 
-const APP_VERSION = '1.2.1';
+const APP_VERSION = '1.3.0';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -112,29 +112,16 @@ function applyRule(rule, exceptId, includeManual = false) {
 
 const autoCtx = () => ({ owners: S.settings.owners || [], ownNumbers: S.settings.ownNumbers || [] });
 
-const BANK_ALIASES = [
-  ['Т-Банк', /T-?BANK|Т-?БАНК|TINKOFF|ТИНЬКОФФ/], ['Ozon Банк', /OZON|ОЗОН/], ['Сбербанк', /SBER|СБЕР/],
-  ['ВТБ', /(^|[^A-ZА-Я])(VTB|ВТБ)([^A-ZА-Я]|$)/], ['Альфа-Банк', /ALFA|АЛЬФА/], ['Яндекс', /YANDEX|ЯНДЕКС/],
-];
-/** Какой банк назван в описании перевода («Перевод в T-Bank»), кроме своего собственного. */
-function mentionedBank(t) {
-  const u = (t.desc + ' ' + (t.raw || '')).toUpperCase().replace(/Ё/g, 'Е');
-  for (const [b, re] of BANK_ALIASES) if (b !== t.bank && re.test(u)) return b;
-  return null;
-}
-const transferLike = (t) => /ПЕРЕВОД|ПОПОЛНЕНИЕ|СБП/.test((t.desc + ' ' + (t.raw || '')).toUpperCase().replace(/Ё/g, 'Е')) || /перевод|пополн/i.test(t.bankCategory || '');
-const stamp = (t) => new Date(t.date + 'T' + (t.time || '12:00') + ':00').getTime();
+/** Встречная операция для t среди всех операций (strict — для автоматической отметки, loose — для подсказки). */
+const counterpartOf = (t, opts = {}) => findCounterpart(t, S.txs, autoCtx(), opts);
 
-/** Встречная операция в другом банке: та же сумма с другим знаком, почти в то же время. */
-function findCounterpart(t, used = new Set()) {
-  if (!transferLike(t)) return null;
-  const mt = mentionedBank(t);
-  const win = t.time ? 15 * 60000 : 86400000;
-  return S.txs.find(o => o.id !== t.id && !used.has(o.id) && o.amount === -t.amount
-    && o.bank !== t.bank && o.bank !== 'Вручную' && t.bank !== 'Вручную'
-    && (!o.category || o.category === 'own') && !o.ignored && transferLike(o)
-    && Math.abs(stamp(o) - stamp(t)) <= (o.time ? win : 86400000)
-    && (!mt || mt === o.bank) && (!mentionedBank(o) || mentionedBank(o) === t.bank)) || null;
+/** Отметить встречную половину перевода, когда человек сам сказал «между своими». */
+function markCounterpart(t) {
+  if (t.category !== 'own' || t.pairId) return null;
+  const o = counterpartOf(t, { loose: true }) || counterpartOf(t);
+  if (!o || o.category) return null;
+  o.category = 'own'; o.catBy = 'pair'; o.pairId = t.id; t.pairId = o.id;
+  return o;
 }
 
 /** Разложить всё, что ещё без категории: новые правила, свои переводы, пары между банками. */
@@ -151,7 +138,7 @@ function autoRecheck() {
   const used = new Set(S.txs.filter(t => t.pairId).map(t => t.id));
   for (const t of S.txs) {
     if (!needsAnswer(t) || used.has(t.id)) continue;
-    const o = findCounterpart(t, used);
+    const o = counterpartOf(t, { used });
     if (!o) continue;
     t.category = 'own'; t.catBy = 'pair'; t.pairId = o.id;
     if (!o.category) { o.category = 'own'; o.catBy = 'pair'; }
@@ -219,7 +206,7 @@ function txRow(t) {
   return `<button class="tx" type="button" data-act="edit" data-id="${esc(t.id)}">
     <span class="tx-main">
       <span class="tx-title">${esc(prettyDesc(t.desc))}</span>
-      <span class="tx-sub">${c ? esc(c.name) : t.ignored ? '' : '<span class="pill warn">без категории</span>'}${t.ignored ? `${c ? ' ' : ''}<span class="pill">не учитывается</span>` : ''}${tags.map(g => ` <span class="pill">${esc(g.name)}</span>`).join('')}${t.reimb === 'done' ? ' <span class="pill ok">возмещено</span>' : ''}${t.bank ? ` · ${esc(t.bank)}` : ''}</span>
+      <span class="tx-sub">${t.time ? `<span class="tx-time">${esc(t.time)}</span> · ` : ''}${c ? esc(c.name) : t.ignored ? '' : '<span class="pill warn">без категории</span>'}${t.ignored ? `${c ? ' ' : ''}<span class="pill">не учитывается</span>` : ''}${tags.map(g => ` <span class="pill">${esc(g.name)}</span>`).join('')}${t.reimb === 'done' ? ' <span class="pill ok">возмещено</span>' : ''}${t.bank ? ` · ${esc(t.bank)}` : ''}</span>
       ${t.comment ? `<span class="tx-note">${esc(t.comment)}</span>` : ''}
     </span>
     <span class="${amountCls(t)}${!counted(t) ? ' transfer' : ''}">${money(t.amount)}</span>
@@ -516,9 +503,11 @@ function editTx(t) {
         changed.push(...applyRule(rule, target.id, catChanged || ignoreChanged));
       }
       if (isNew) { S.txs.push(target); reindex(); }
+      const pair = markCounterpart(target);
+      if (pair) changed.push(pair);
       await saveTxs(changed);
       closeSheet();
-      toast(changed.length > 1 ? `Сохранено. Правило применено ещё к ${changed.length - 1}` : 'Сохранено');
+      toast(pair ? `Сохранено. Встречная ${money(pair.amount)} в ${pair.bank} тоже отмечена` : changed.length > 1 ? `Сохранено. Правило применено ещё к ${changed.length - 1}` : 'Сохранено');
       render();
     },
   });
@@ -583,7 +572,7 @@ function queueGroups() {
   for (const t of S.txs) {
     if (!needsAnswer(t)) continue;
     const gkBase = (isGenericKey(t.key) ? 'g:' + normText(prettyDesc(t.desc)).replace(/[\d*•№]+/g, '').replace(/\s+/g, ' ') : t.key) + '|' + dirOf(t);
-    const gk = S.queue.split.has(gkBase) ? 'tx:' + t.id : gkBase;
+    const gk = (S.queue.split.has(gkBase) || (isGenericKey(t.key) && counterpartOf(t, { loose: true }))) ? 'tx:' + t.id : gkBase;
     if (!groups.has(gk)) groups.set(gk, { id: gk, base: gkBase, key: t.key, dir: dirOf(t), items: [] });
     groups.get(gk).items.push(t);
   }
@@ -610,16 +599,16 @@ function renderQueue() {
   const g = groups[0];
   const t0 = g.items[0];
   const dates = g.items.map(t => t.date).sort();
-  const hintCat = g.items.length === 1 ? findCounterpart(t0) : null;
+  const hintCat = g.items.length === 1 ? (counterpartOf(t0) || counterpartOf(t0, { loose: true })) : null;
   const preselect = hintCat ? 'own' : null;
   const generic = isGenericKey(g.key);
   screen.innerHTML = `<header class="scr-head"><h1>Разобрать</h1><span class="muted">осталось ${total}</span></header>
     <article class="card q-card">
       <div class="q-title">${esc(prettyDesc(t0.desc))}</div>
-      <div class="q-meta"><b class="${g.sum > 0 ? 'pos' : ''}">${money(g.sum)}</b> · ${g.items.length > 1 ? `${g.items.length} ${plural(g.items.length, 'операция', 'операции', 'операций')} · ${dateDots(dates[0])}–${dateDots(dates[dates.length - 1])}` : esc(dateRu(t0.date))} · ${esc(t0.bank || '')}</div>
+      <div class="q-meta"><b class="${g.sum > 0 ? 'pos' : ''}">${money(g.sum)}</b> · ${g.items.length > 1 ? `${g.items.length} ${plural(g.items.length, 'операция', 'операции', 'операций')} · ${dateDots(dates[0])}–${dateDots(dates[dates.length - 1])}` : esc(dateRu(t0.date)) + (t0.time ? ', ' + esc(t0.time) : '')} · ${esc(t0.bank || '')}</div>
       ${t0.bankCategory ? `<div class="muted small">Банк пишет: «${esc(t0.bankCategory)}»</div>` : ''}
-      ${hintCat ? `<div class="hint">Похоже на перевод между своими счетами: есть встречная операция ${money(hintCat.amount)} в ${esc(hintCat.bank)} ${dateDots(hintCat.date)}.</div>` : ''}
-      ${g.items.length > 1 ? `<ul class="q-ex">${g.items.slice(0, 4).map(t => `<li><span>${dateDots(t.date)}</span><span class="${amountCls(t)}">${money(t.amount)}</span></li>`).join('')}${g.items.length > 4 ? `<li class="muted">и ещё ${g.items.length - 4}</li>` : ''}</ul>` : ''}
+      ${hintCat ? `<div class="hint">Похоже на перевод между своими счетами: есть встречная операция ${money(hintCat.amount)} в ${esc(hintCat.bank)} ${dateDots(hintCat.date)}${hintCat.time ? ' в ' + esc(hintCat.time) : ''}. Если выбрать «Между своими счетами», она отметится тоже.</div>` : ''}
+      ${g.items.length > 1 ? `<ul class="q-ex">${g.items.slice(0, 4).map(t => `<li><span>${dateDots(t.date)}${t.time ? ' ' + esc(t.time) : ''}</span><span class="${amountCls(t)}">${money(t.amount)}</span></li>`).join('')}${g.items.length > 4 ? `<li class="muted">и ещё ${g.items.length - 4}</li>` : ''}</ul>` : ''}
       <div class="group"><div class="group-h">${g.dir === 'out' ? 'Что это за трата?' : 'Что это за поступление?'}</div>
         <fieldset class="chips" aria-label="Категория">${chipsHtml('qcat', fittingCats(g.dir), preselect)}<button class="chip-add" type="button" data-act="newcat">+ категория</button></fieldset>
         ${newCatRowHtml('q')}
@@ -670,12 +659,15 @@ function renderQueue() {
       const tags = $$('input[name="qtag"]:checked', screen).map(i => i.value);
       const comment = $('#q-comment', screen).value.trim();
       const changed = [];
+      const pairs = [];
       for (const t of g.items) {
         t.category = c.value; t.catBy = 'manual';
         if (tags.length) t.tags = [...new Set([...(t.tags || []), ...tags])];
         if (comment) t.comment = comment;
         updateReimb(t);
         changed.push(t);
+        const o = markCounterpart(t);
+        if (o) { pairs.push(o); changed.push(o); }
       }
       const rb = $('#q-rule', screen);
       if (rb && rb.checked) {
@@ -688,7 +680,8 @@ function renderQueue() {
       }
       await saveTxs(changed);
       S.queue.skipped = S.queue.skipped.filter(x => x !== g.id);
-      toast(`«${catName(c.value)}»: ${g.items.length} ${plural(g.items.length, 'операция', 'операции', 'операций')}`);
+      toast(`«${catName(c.value)}»: ${g.items.length} ${plural(g.items.length, 'операция', 'операции', 'операций')}` +
+        (pairs.length === 1 ? ` и встречная ${money(pairs[0].amount)} в ${pairs[0].bank}` : pairs.length ? ` и ${pairs.length} встречных` : ''));
       render();
     },
   });
@@ -1081,7 +1074,7 @@ function reviewImport(res) {
           <div class="stat-grid">
             <div><span class="eyebrow">Операций</span><b>${p.txs.length}</b></div>
             <div><span class="eyebrow">Период</span><b>${dateDots(dates[0])}–${dateDots(dates[dates.length - 1])}</b></div>
-            <div><span class="eyebrow">Расходы</span><b>${MINUS}${rub(exp)}</b></div>
+            <div><span class="eyebrow">Расходы</span><b>${exp ? MINUS : ''}${rub(exp)}</b></div>
             <div><span class="eyebrow">Поступления</span><b class="pos">+${rub(inc)}</b></div>
           </div>
           ${check}
@@ -1172,9 +1165,15 @@ function reviewImport(res) {
   });
 }
 
+let importing = false;
 $('#file-in').addEventListener('change', async (e) => {
   const files = [...(e.target.files || [])];
   e.target.value = '';
+  if (importing) { toast('Сначала закончите текущую загрузку'); return; }
+  importing = true;
+  try { await importFiles(files); } finally { importing = false; }
+});
+async function importFiles(files) {
   let any = false;
   for (const f of files) {
     busy(`Читаю «${f.name}»…`);
@@ -1188,7 +1187,7 @@ $('#file-in').addEventListener('change', async (e) => {
     const left = S.txs.filter(needsAnswer).length;
     setTab(left ? 'queue' : 'home');
   } else render();
-});
+}
 
 // ---------- обновления приложения ----------
 let swReg = null;

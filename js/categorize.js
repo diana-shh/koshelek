@@ -132,3 +132,70 @@ export function makeRule(tx, category, scope, ignore = false) {
   const value = scope || tx.key;
   return { id: uid(), op: value === tx.key ? 'equals' : 'prefix', value, dir: dirOf(tx), category: ignore ? null : category, ignore, tags: [], created: today() };
 }
+
+// ---------- переводы между своими счетами: поиск встречной операции ----------
+export const BANK_ALIASES = [
+  ['Т-Банк', /T-?BANK|Т-?БАНК|TINKOFF|ТИНЬКОФФ/], ['Ozon Банк', /OZON|ОЗОН/], ['Сбербанк', /SBER|СБЕР/],
+  ['ВТБ', /(^|[^A-ZА-Я])(VTB|ВТБ)([^A-ZА-Я]|$)/], ['Альфа-Банк', /ALFA|АЛЬФА/], ['Яндекс', /YANDEX|ЯНДЕКС/],
+  ['Газпромбанк', /GAZPROM|ГАЗПРОМ/], ['Райффайзен', /RAIFF|РАЙФ/], ['МТС Банк', /MTS ?BANK|МТС ?БАНК/],
+];
+const up = (s) => String(s || '').toUpperCase().replace(/Ё/g, 'Е');
+/** Один и тот же банк под разными названиями: «Яндекс Банк», «Яндекс», «Yandex» → «Яндекс». */
+export function bankCanon(name) {
+  const u = up(name);
+  for (const [b, re] of BANK_ALIASES) if (b.toUpperCase() === u || re.test(u)) return b;
+  return name || '';
+}
+/** Какой чужой банк назван в описании перевода («Перевод в T-Bank»). */
+export function mentionedBank(t) {
+  const own = bankCanon(t.bank);
+  const u = up(t.desc + ' ' + (t.raw || ''));
+  for (const [b, re] of BANK_ALIASES) if (b !== own && re.test(u)) return b;
+  return null;
+}
+export const transferLike = (t) => /ПЕРЕВОД|ПОПОЛНЕНИЕ|СБП|ЗАЧИСЛЕНИЕ/.test(up(t.desc + ' ' + (t.raw || ''))) || /перевод|пополн/i.test(t.bankCategory || '');
+/** Назван другой человек (по отчеству): «Перевод от М. Кристина Олеговна» — это не свой перевод. */
+export function mentionsOtherPerson(t, owners = []) {
+  const words = up(t.desc + ' ' + (t.raw || '')).replace(/[^A-ZА-Я]+/g, ' ').split(' ');
+  const mine = new Set(owners.map(o => up(o.middle)));
+  return words.some(w => w.length > 4 && /(ВНА|ВИЧ|ИЧНА|ОГЛЫ|КЫЗЫ)$/.test(w) && !mine.has(w));
+}
+const stamp = (t) => new Date(t.date + 'T' + (t.time || '12:00') + ':00').getTime();
+
+/** Похожа ли пара t ↔ o на перевод самой себе.
+ *  strict — для автоматической отметки: та же сумма (или с комиссией до 1,5% при разнице до 15 минут), до 15 минут
+ *           по времени, а если времени нет — до суток. loose — для подсказки в «Разобрать»: та же сумма, до 3 дней. */
+export function isPair(t, o, ctx = {}, loose = false) {
+  if (o.id === t.id || o.ignored || t.ignored) return false;
+  if ((t.amount < 0) === (o.amount < 0)) return false;
+  if (t.bank === 'Вручную' || o.bank === 'Вручную') return false;
+  const bt = bankCanon(t.bank), bo = bankCanon(o.bank);
+  const sameBank = bt === bo;
+  if (sameBank && (!t.account || !o.account || t.account === o.account)) return false;
+  if (!transferLike(t) || !transferLike(o)) return false;
+  const mt = mentionedBank(t), mo = mentionedBank(o);
+  if (mt && mt !== bo) return false;
+  if (mo && mo !== bt) return false;
+  if (mentionsOtherPerson(t, ctx.owners) || mentionsOtherPerson(o, ctx.owners)) return false;
+  const dt = Math.abs(stamp(o) - stamp(t));
+  const bothTimes = !!(t.time && o.time);
+  const exact = o.amount === -t.amount;
+  if (loose) return exact && dt <= 3 * 86400000;
+  if (exact) return dt <= (bothTimes ? 15 * 60000 : 86400000);
+  // Комиссия за перевод: отправлено немного больше, чем пришло.
+  const out = t.amount < 0 ? t : o, inn = t.amount < 0 ? o : t;
+  const fee = -out.amount - inn.amount;
+  return bothTimes && dt <= 15 * 60000 && fee > 0 && fee <= -out.amount * 0.015;
+}
+
+/** Встречная операция среди list (ещё без категории или уже «между своими»), ближайшая по времени. */
+export function findCounterpart(t, list, ctx = {}, { used = new Set(), loose = false } = {}) {
+  let best = null, bestDt = Infinity;
+  for (const o of list) {
+    if (used.has(o.id) || (o.category && o.category !== 'own')) continue;
+    if (!isPair(t, o, ctx, loose)) continue;
+    const d = Math.abs(stamp(o) - stamp(t));
+    if (d < bestDt) { best = o; bestDt = d; }
+  }
+  return best;
+}
