@@ -156,9 +156,16 @@ export function mentionedBank(t) {
 export const transferLike = (t) => /ПЕРЕВОД|ПОПОЛНЕНИЕ|СБП|ЗАЧИСЛЕНИЕ/.test(up(t.desc + ' ' + (t.raw || ''))) || /перевод|пополн/i.test(t.bankCategory || '');
 /** Назван другой человек (по отчеству): «Перевод от М. Кристина Олеговна» — это не свой перевод. */
 export function mentionsOtherPerson(t, owners = []) {
-  const words = up(t.desc + ' ' + (t.raw || '')).replace(/[^A-ZА-Я]+/g, ' ').split(' ');
+  const text = t.desc + ' ' + (t.raw || '');
+  const words = up(text).replace(/[^A-ZА-Я]+/g, ' ').split(' ');
   const mine = new Set(owners.map(o => up(o.middle)));
-  return words.some(w => w.length > 4 && /(ВНА|ВИЧ|ИЧНА|ОГЛЫ|КЫЗЫ)$/.test(w) && !mine.has(w));
+  const firsts = new Set(owners.map(o => up(o.first)));
+  // Отчество: «…вна», «…вич», «…ична», а также отдельные слова «оглы», «кызы».
+  if (words.some(w => !mine.has(w) && ((w.length > 4 && /(ВНА|ВИЧ|ИЧНА)$/.test(w)) || w === 'ОГЛЫ' || w === 'КЫЗЫ'))) return true;
+  // «Исходящий перевод СБП, Армен Н, +7…» — получатель назван по имени без отчества.
+  const m = text.match(/(?:[Пп]еревод[^,]*?|[Пп]олучатель:?|[Оо]тправитель:?)[,\s]\s*([А-ЯЁ][а-яё]+)(?:\s+([А-ЯЁ][а-яё]+))?\s+[А-ЯЁ]\.?(?=,|\s|$)/);
+  if (m && !firsts.has(up(m[1])) && !mine.has(up(m[1])) && !(m[2] && mine.has(up(m[2])))) return true;
+  return false;
 }
 const stamp = (t) => new Date(t.date + 'T' + (t.time || '12:00') + ':00').getTime();
 

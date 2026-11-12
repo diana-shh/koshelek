@@ -10,7 +10,7 @@ import { merchantKey, isGenericKey, autoCategory, sortRules, makeRule, ruleMatch
 import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
 import { buildReport, exportXlsx, chartPng, isWorkTx, isReimbTx, workBalance, catLabel } from './report.js';
 
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.4.1';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],

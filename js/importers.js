@@ -32,6 +32,7 @@ async function loadPdf() {
 export function detectBank(text) {
   const s = normText(text);
   if (/озон банк|ozon bank|ozonbank|«озон банк»/.test(s)) return 'Ozon Банк';
+  if (/яндекс банк|yandex bank|«яндекс банк»/.test(s)) return 'Яндекс Банк';
   if (/сбербанк|sberbank|сбер банк|пао сбер/.test(s)) return 'Сбербанк';
   if (/тинькофф|т-банк|тбанк|tbank|tinkoff|ао «тбанк»|ао "тбанк"/.test(s)) return 'Т-Банк';
   if (/альфа-банк|альфа банк|alfa-bank|alfabank|альфабанк/.test(s)) return 'Альфа-Банк';
@@ -318,7 +319,7 @@ function findTotal(lines, re) {
   }
   return null;
 }
-const MONEY_RE = '([+\\-]?\\s?\\d{1,3}(?:[ \\u00a0\\u202f]\\d{3})*[.,]\\d{2})';
+const MONEY_RE = '([+\\-\\u2212\\u2013]?\\s?\\d{1,3}(?:[ \\u00a0\\u202f]\\d{3})*[.,]\\d{2})';
 
 // Сбербанк: строка 1 — дата, время, категория банка, сумма, остаток; строка 2 — дата обработки, код, описание.
 const SBER_STOP = /продолжение на следующей|для проверки подлинности|^\d\. |^действителен|^до \d{2}\.\d{2}\.\d{4}$|^выписка по|^дата операции|^дата обработки|^и код авторизации|^пао сбербанк|^денежные средства|^в выписке|^срок обработки|^[¹²*]|^\d$|^согласно|^скачать|^проверить/;
@@ -441,7 +442,50 @@ function parseOzonPdf(lines) {
   };
 }
 
+// Яндекс Банк, «Выписка по договору». Счёт: описание (несколько строк) / дата и время («в 14:57» строкой ниже) / дата обработки / карта / суммы.
+// Вклад «Сейв»: описание / дата операции (без времени) / сумма.
+function parseYandexPdf(lines) {
+  const dateX = headerX(lines, /^дата и время$/) ?? headerX(lines, /^дата операции$/) ?? 210;
+  const SKIP = /^продолжение на следующей|^страница \d+ из|^описание операции|^операции обработки|^мск|^входящий остаток/;
+  const END = /^исходящий остаток|^всего (расходных|приходных)|^итого (списаний|зачислений)|^с уважением/;
+  const rows = [];
+  let cur = null;
+  for (const l of lines) {
+    const t = normText(l.text);
+    if (END.test(t)) { cur = null; continue; }
+    if (SKIP.test(t)) continue;
+    const date = l.cells.find(c => DATE_CELL.test(c.s) && c.x >= dateX - 15 && c.x < dateX + 40);
+    const money = l.cells.filter(c => MONEY_CELL.test(c.s) && c.x > dateX + 60);
+    const descCells = l.cells.filter(c => c.x < dateX - 5).map(c => c.s);
+    if (date && money.length) {
+      const card = l.cells.find(c => /^\*\d{4}$/.test(c.s));
+      cur = { date: date.s, time: '', amt: money[money.length - 1].s, desc: descCells, card: card ? card.s : '' };
+      rows.push(cur);
+      continue;
+    }
+    if (!cur) continue;
+    const tm = l.cells.find(c => /^в \d{2}:\d{2}$/.test(c.s));
+    if (tm && !cur.time) cur.time = tm.s.slice(2, 7);
+    if (descCells.length) cur.desc.push(...descCells);
+  }
+  const txs = rows.map(r => {
+    const a = signedMoney(r.amt);
+    if (!a) return null;
+    const raw = cleanText(r.desc.join(' '));
+    const mcc = (raw.match(/[A-Z]\*(\d{4})\*/) || [])[1] || '';
+    return { date: parseDate(r.date).date, time: r.time, amount: a, desc: raw, raw, bankCategory: '', mcc, account: '' };
+  }).filter(Boolean);
+  return {
+    txs,
+    totals: {
+      in: findTotal(lines, new RegExp('^всего приходных операций ' + MONEY_RE)) ?? findTotal(lines, new RegExp('^итого зачислений ' + MONEY_RE)),
+      out: findTotal(lines, new RegExp('^всего расходных операций ' + MONEY_RE)) ?? findTotal(lines, new RegExp('^итого списаний ' + MONEY_RE)),
+    },
+  };
+}
+
 const PDF_PARSERS = {
+  'Яндекс Банк': parseYandexPdf,
   'Сбербанк': parseSberPdf,
   'Т-Банк': parseTbankPdf,
   'Ozon Банк': parseOzonPdf,
@@ -462,7 +506,7 @@ function detectOwnNumbers(lines) {
   const out = new Set();
   for (const l of lines.slice(0, 30)) {
     const t = normText(l.text);
-    if (/номер (договора|сч[её]та|лицевого сч[её]та)|лицевого сч[её]та/.test(t)) {
+    if (/номер (договора|сч[её]та|лицевого сч[её]та)|лицевого сч[её]та|открыт сч[её]т|договор №/.test(t)) {
       const digits = l.text.replace(/(\d)[ ](?=\d)/g, '$1').match(/\d{10,}/g) || [];
       digits.forEach(d => out.add(d));
     }
