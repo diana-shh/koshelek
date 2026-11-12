@@ -1,7 +1,8 @@
 // Справочники по умолчанию: категории, метки, коды MCC и названия категорий банков.
 
 /** type: out — расход, in — доход, transfer — перевод между своими (не считается ни расходом, ни доходом).
- *  work: true — доход-возмещение рабочих трат (учитывается вместе с рабочими тратами). */
+ *  work: true — рабочие траты и их возмещение: не входят в личный бюджет, по ним считается баланс.
+ *  group: true — группа (саму её не выбирают), parent — подкатегория этой группы. */
 export const DEFAULT_CATEGORIES = [
   { id: 'food', name: 'Продукты', type: 'out' },
   { id: 'cafe', name: 'Кафе и рестораны', type: 'out' },
@@ -25,6 +26,12 @@ export const DEFAULT_CATEGORIES = [
   { id: 'gov', name: 'Налоги, штрафы, госуслуги', type: 'out' },
   { id: 'fees', name: 'Комиссии и проценты', type: 'out' },
   { id: 'other', name: 'Прочие расходы', type: 'out' },
+  { id: 'work', name: 'Рабочая', type: 'out', work: true, group: true },
+  { id: 'w_transport', name: 'Транспорт', type: 'out', work: true, parent: 'work' },
+  { id: 'w_services', name: 'Оплата услуг', type: 'out', work: true, parent: 'work' },
+  { id: 'w_courier', name: 'Курьерские услуги', type: 'out', work: true, parent: 'work' },
+  { id: 'w_equipment', name: 'Оборудование', type: 'out', work: true, parent: 'work' },
+  { id: 'w_other', name: 'Прочее', type: 'out', work: true, parent: 'work' },
   { id: 'salary', name: 'Зарплата', type: 'in' },
   { id: 'side', name: 'Подработка', type: 'in' },
   { id: 'cashback', name: 'Кэшбэк и проценты', type: 'in' },
@@ -35,10 +42,8 @@ export const DEFAULT_CATEGORIES = [
   { id: 'own', name: 'Между своими счетами', type: 'transfer' },
 ];
 
-/** reimb: true — траты с этой меткой ждут возмещения. */
-export const DEFAULT_TAGS = [
-  { id: 'work', name: 'Рабочая', reimb: true },
-];
+/** Метки — свободные пометки поверх категории. Рабочие траты теперь — группа категорий «Рабочая». */
+export const DEFAULT_TAGS = [];
 
 export const BANKS = ['Сбербанк', 'Т-Банк', 'Ozon Банк', 'Альфа-Банк', 'ВТБ'];
 

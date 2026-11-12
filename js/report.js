@@ -3,7 +3,49 @@
 import { rub, monthsBetween, monthTitle, dateDots, prettyDesc, saveFile } from './util.js';
 import { loadXLSX } from './importers.js';
 
-export const isWorkTx = (t, tagMap) => (t.tags || []).some(id => tagMap.get(id) && tagMap.get(id).reimb);
+/** «Рабочая · Транспорт» для подкатегории, просто название — для обычной. */
+export function catLabel(id, catMap) {
+  const c = id ? catMap.get(id) : null;
+  if (!c) return 'Без категории';
+  const p = c.parent ? catMap.get(c.parent) : null;
+  return p ? `${p.name} · ${c.name}` : c.name;
+}
+
+/** Рабочая трата: расход в группе «Рабочая» (или со старой меткой «к возмещению»). */
+export const isWorkTx = (t, tagMap, catMap) => {
+  const c = catMap && t.category ? catMap.get(t.category) : null;
+  if (c && c.work && t.amount < 0) return true;
+  return (t.tags || []).some(id => tagMap.get(id) && tagMap.get(id).reimb);
+};
+/** Возмещение: поступление в категории с work (например, «Возмещение рабочих трат»). */
+export const isReimbTx = (t, catMap) => {
+  const c = t.category ? catMap.get(t.category) : null;
+  return !!(c && c.work && t.amount > 0);
+};
+/** Баланс рабочих трат по списку операций: потрачено, возмещено, осталось вернуть, разбивка по подкатегориям. */
+export function workBalance(txs, catMap, tagMap) {
+  const out = { spent: 0, back: 0, left: 0, bySub: new Map(), list: [] };
+  for (const t of txs) {
+    if (t.ignored) continue;
+    if (isWorkTx(t, tagMap, catMap)) {
+      const v = -t.amount;
+      out.spent += v;
+      const c = catMap.get(t.category);
+      const key = c && c.work ? c.id : 'w_other';
+      const name = c && c.work ? c.name : 'Прочее';
+      const e = out.bySub.get(key) || { id: key, name, sum: 0, count: 0 };
+      e.sum += v; e.count++; out.bySub.set(key, e);
+      out.list.push(t);
+    } else if (isReimbTx(t, catMap)) {
+      out.back += t.amount;
+      out.list.push(t);
+    }
+  }
+  out.left = out.spent - out.back;
+  out.subs = [...out.bySub.values()].sort((a, b) => b.sum - a.sum);
+  out.list.sort((a, b) => a.date === b.date ? (a.time || '').localeCompare(b.time || '') : a.date.localeCompare(b.date));
+  return out;
+}
 
 export function buildReport({ txs, catMap, tagMap, from, to, includeWork, bank }) {
   const months = monthsBetween(from, to);
@@ -11,7 +53,7 @@ export function buildReport({ txs, catMap, tagMap, from, to, includeWork, bank }
   const byInCat = new Map();
   const byMonth = new Map(months.map(m => [m, 0]));
   const catMonth = new Map();
-  const work = { total: 0, done: 0, pending: 0, count: 0, list: [] };
+
   const rows = [];
   let exp = 0, inc = 0, transfers = 0, uncat = 0, uncatSum = 0;
   const ignored = [];
@@ -22,18 +64,12 @@ export function buildReport({ txs, catMap, tagMap, from, to, includeWork, bank }
     if (t.ignored) { ignored.push(t); continue; }
     const c = t.category ? catMap.get(t.category) : null;
     if (c && c.type === 'transfer') { transfers++; continue; }
-    const w = isWorkTx(t, tagMap);
-    if (w && t.amount < 0) {
-      const v = -t.amount;
-      work.total += v; work.count++;
-      if (t.reimb === 'done') work.done += v; else work.pending += v;
-      work.list.push(t);
-    }
+    const w = isWorkTx(t, tagMap, catMap);
     if (!includeWork && (w || (c && c.work))) continue;
     rows.push(t);
     if (!c) { uncat++; uncatSum += Math.abs(t.amount); }
     const key = c ? c.id : '';
-    const name = c ? c.name : 'Без категории';
+    const name = c ? catLabel(c.id, catMap) : 'Без категории';
     if (t.amount < 0) {
       const v = -t.amount;
       exp += v;
@@ -52,7 +88,7 @@ export function buildReport({ txs, catMap, tagMap, from, to, includeWork, bank }
   const cats = [...byCat.values()].sort((a, b) => b.sum - a.sum);
   const inCats = [...byInCat.values()].sort((a, b) => b.sum - a.sum);
   rows.sort((a, b) => a.date === b.date ? (a.time || '').localeCompare(b.time || '') : a.date.localeCompare(b.date));
-  work.list.sort((a, b) => a.date.localeCompare(b.date));
+  const work = workBalance(txs.filter(t => t.date >= from && t.date <= to && (!bank || t.bank === bank)), catMap, tagMap);
   ignored.sort((a, b) => a.date.localeCompare(b.date));
   return { from, to, months, exp, inc, cats, inCats, byMonth, catMonth, work, rows, transfers, uncat, uncatSum, includeWork, bank, ignored };
 }
@@ -105,28 +141,31 @@ export async function exportXlsx(rep, { catMap, tagMap }) {
   }
 
   const tagNames = (t) => (t.tags || []).map(id => tagMap.get(id) ? tagMap.get(id).name : '').filter(Boolean).join(', ');
-  const reimbText = (t) => t.reimb === 'done' ? 'возмещено' : t.reimb === 'pending' ? 'ждёт возмещения' : '';
-  const s3 = [['Дата', 'Время', 'Банк', 'Счёт', 'Описание', 'Категория', 'Метки', 'Комментарий', 'Сумма, ₽', 'Возмещение']];
+  const label = (id) => catLabel(id, catMap);
+  const s3 = [['Дата', 'Время', 'Банк', 'Счёт', 'Описание', 'Категория', 'Метки', 'Комментарий', 'Сумма, ₽']];
   for (const t of rep.rows) {
-    const c = t.category ? catMap.get(t.category) : null;
-    s3.push([dateDots(t.date), t.time || '', t.bank || '', t.account || '', prettyDesc(t.desc), c ? c.name : 'Без категории',
-      tagNames(t), t.comment || '', t.amount / 100, reimbText(t)]);
+    s3.push([dateDots(t.date), t.time || '', t.bank || '', t.account || '', prettyDesc(t.desc), label(t.category),
+      tagNames(t), t.comment || '', t.amount / 100]);
   }
   const ws3 = XLSX.utils.aoa_to_sheet(s3);
   setFormats(ws3, XLSX, { 8: MONEY });
-  ws3['!cols'] = [{ wch: 11 }, { wch: 7 }, { wch: 12 }, { wch: 8 }, { wch: 44 }, { wch: 24 }, { wch: 14 }, { wch: 30 }, { wch: 14 }, { wch: 16 }];
+  ws3['!cols'] = [{ wch: 11 }, { wch: 7 }, { wch: 12 }, { wch: 8 }, { wch: 44 }, { wch: 28 }, { wch: 14 }, { wch: 30 }, { wch: 14 }];
   XLSX.utils.book_append_sheet(wb, ws3, 'Операции');
 
-  if (rep.work.list.length) {
-    const s4 = [['Рабочие траты'], [period], [`Всего ${rub(rep.work.total)} · возмещено ${rub(rep.work.done)} · ждут ${rub(rep.work.pending)}`], [],
-      ['Дата', 'Время', 'Описание', 'Категория', 'Комментарий', 'Сумма, ₽', 'Статус']];
-    for (const t of rep.work.list) {
+  const w = rep.work;
+  if (w.list.length) {
+    const s4 = [['Рабочие траты — баланс'], [period], [],
+      ['Потрачено', w.spent / 100], ['Возмещено', w.back / 100], ['Осталось вернуть', w.left / 100], [],
+      ['Подкатегория', 'Сумма, ₽', 'Операций']];
+    for (const e of w.subs) s4.push([e.name, e.sum / 100, e.count]);
+    s4.push([], ['Дата', 'Время', 'Что', 'Подкатегория', 'Комментарий', 'Сумма, ₽']);
+    for (const t of w.list) {
       const c = t.category ? catMap.get(t.category) : null;
-      s4.push([dateDots(t.date), t.time || '', prettyDesc(t.desc), c ? c.name : 'Без категории', t.comment || '', -t.amount / 100, reimbText(t) || 'ждёт возмещения']);
+      s4.push([dateDots(t.date), t.time || '', prettyDesc(t.desc), c ? (c.parent ? c.name : (t.amount > 0 ? 'Возмещение' : c.name)) : 'Прочее', t.comment || '', t.amount / 100]);
     }
     const ws4 = XLSX.utils.aoa_to_sheet(s4);
-    setFormats(ws4, XLSX, { 5: MONEY });
-    ws4['!cols'] = [{ wch: 11 }, { wch: 7 }, { wch: 44 }, { wch: 24 }, { wch: 30 }, { wch: 14 }, { wch: 18 }];
+    setFormats(ws4, XLSX, { 1: MONEY, 5: MONEY });
+    ws4['!cols'] = [{ wch: 22 }, { wch: 14 }, { wch: 44 }, { wch: 22 }, { wch: 30 }, { wch: 14 }];
     XLSX.utils.book_append_sheet(wb, ws4, 'Рабочие траты');
   }
 
@@ -135,7 +174,7 @@ export async function exportXlsx(rep, { catMap, tagMap }) {
       ['Дата', 'Время', 'Банк', 'Описание', 'Категория', 'Комментарий', 'Сумма, ₽']];
     for (const t of rep.ignored) {
       const c = t.category ? catMap.get(t.category) : null;
-      s5.push([dateDots(t.date), t.time || '', t.bank || '', prettyDesc(t.desc), c ? c.name : '', t.comment || '', t.amount / 100]);
+      s5.push([dateDots(t.date), t.time || '', t.bank || '', prettyDesc(t.desc), c ? catLabel(t.category, catMap) : '', t.comment || '', t.amount / 100]);
     }
     const ws5 = XLSX.utils.aoa_to_sheet(s5);
     setFormats(ws5, XLSX, { 6: MONEY });

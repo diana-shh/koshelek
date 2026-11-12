@@ -8,9 +8,9 @@ import {
 import { DEFAULT_CATEGORIES, DEFAULT_TAGS, BANKS } from './catalog.js';
 import { merchantKey, isGenericKey, autoCategory, sortRules, makeRule, ruleMatches, dirOf, categoryFits, ruleScopes, suggestScope, findCounterpart } from './categorize.js';
 import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
-import { buildReport, exportXlsx, chartPng, isWorkTx } from './report.js';
+import { buildReport, exportXlsx, chartPng, isWorkTx, isReimbTx, workBalance, catLabel } from './report.js';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -63,8 +63,24 @@ async function load() {
   const knownCats = new Set(S.settings.knownCats || S.cats.map(c => c.id));
   for (const d of DEFAULT_CATEGORIES) {
     if (knownCats.has(d.id) || S.cats.some(c => c.id === d.id)) continue;
-    const at = S.cats.findIndex(c => c.id === 'fees');
-    S.cats.splice(at >= 0 ? at : S.cats.findIndex(c => c.type !== 'out'), 0, { ...d });
+    let at = (d.work || d.parent) ? S.cats.findIndex(c => c.type !== 'out') : S.cats.findIndex(c => c.id === 'fees');
+    if (at < 0) at = S.cats.length;
+    S.cats.splice(at, 0, { ...d });
+  }
+  // Старая метка «Рабочая» (к возмещению) → категории группы «Рабочая».
+  const oldWorkTags = S.tags.filter(g => g.reimb).map(g => g.id);
+  if (oldWorkTags.length) {
+    const ch = [];
+    for (const t of S.txs) {
+      if (!(t.tags || []).some(id => oldWorkTags.includes(id))) continue;
+      t.tags = t.tags.filter(id => !oldWorkTags.includes(id));
+      if (t.amount < 0) t.category = ['taxi', 'transport', 'auto'].includes(t.category) ? 'w_transport' : 'w_other';
+      t.reimb = null;
+      ch.push(t);
+    }
+    S.tags = S.tags.filter(g => !oldWorkTags.includes(g.id));
+    await db.putMany('tx', ch);
+    await db.setMeta('tags', S.tags);
   }
   const fun = S.cats.find(c => c.id === 'fun');
   if (fun && fun.name === 'Развлечения и хобби') fun.name = 'Спорт, развлечения, хобби';
@@ -82,16 +98,16 @@ const saveCats = () => { reindex(); return db.setMeta('categories', S.cats); };
 const saveTags = () => { reindex(); return db.setMeta('tags', S.tags); };
 const saveSettings = () => db.setMeta('settings', S.settings);
 
-const isWork = (t) => isWorkTx(t, S.tagMap);
-const catName = (id) => (S.catMap.get(id) ? S.catMap.get(id).name : 'Без категории');
+const isWork = (t) => isWorkTx(t, S.tagMap, S.catMap);
+const isReimb = (t) => isReimbTx(t, S.catMap);
+/** «Рабочая · Транспорт» для подкатегории. */
+const catName = (id) => catLabel(id, S.catMap);
 /** Ждёт ответа во вкладке «Разобрать»: нет категории и не отмечена «не учитывать». */
 const needsAnswer = (t) => !t.category && !t.ignored;
 /** Входит в расходы и доходы: не «не учитывать» и не перевод между своими счетами. */
 const counted = (t) => !t.ignored && !(S.catMap.get(t.category) && S.catMap.get(t.category).type === 'transfer');
-function updateReimb(t) {
-  if (isWork(t)) { if (!t.reimb) t.reimb = 'pending'; }
-  else t.reimb = null;
-}
+// Отметки «ждёт/возмещено» у отдельных операций больше не нужны: возмещение считается балансом.
+function updateReimb(t) { if (t.reimb) t.reimb = null; }
 
 /** Применить правило ко всем операциям с тем же получателем. Выставленные вручную меняются,
  *  только когда человек сам поменял категорию в карточке операции (includeManual). */
@@ -196,7 +212,16 @@ function render() {
 
 const chipsHtml = (name, items, selected, type = 'radio') => items.map(it => `
   <label class="chip"><input type="${type}" name="${name}" value="${esc(it.id)}" ${(type === 'radio' ? selected === it.id : selected.includes(it.id)) ? 'checked' : ''}><span>${esc(it.name)}</span></label>`).join('');
-const fittingCats = (dir) => S.cats.filter(c => c.type === dir).concat(S.cats.filter(c => c.type === 'transfer'));
+/** Варианты категорий для расхода/дохода: свои, затем группы с подкатегориями (сама группа не выбирается), затем «между своими». */
+function catChipsHtml(name, dir, selected) {
+  const personal = S.cats.filter(c => c.type === dir && !c.group && !c.parent);
+  let html = chipsHtml(name, personal.concat(S.cats.filter(c => c.type === 'transfer')), selected);
+  for (const g of S.cats.filter(c => c.group && c.type === dir)) {
+    const subs = S.cats.filter(c => c.parent === g.id);
+    if (subs.length) html += `<span class="chip-group">${esc(g.name)}${g.work ? ' — к возмещению' : ''}</span>` + chipsHtml(name, subs, selected);
+  }
+  return html;
+}
 
 function amountCls(t) { return t.amount > 0 ? 'amt pos' : 'amt'; }
 
@@ -206,7 +231,7 @@ function txRow(t) {
   return `<button class="tx" type="button" data-act="edit" data-id="${esc(t.id)}">
     <span class="tx-main">
       <span class="tx-title">${esc(prettyDesc(t.desc))}</span>
-      <span class="tx-sub">${t.time ? `<span class="tx-time">${esc(t.time)}</span> · ` : ''}${c ? esc(c.name) : t.ignored ? '' : '<span class="pill warn">без категории</span>'}${t.ignored ? `${c ? ' ' : ''}<span class="pill">не учитывается</span>` : ''}${tags.map(g => ` <span class="pill">${esc(g.name)}</span>`).join('')}${t.reimb === 'done' ? ' <span class="pill ok">возмещено</span>' : ''}${t.bank ? ` · ${esc(t.bank)}` : ''}</span>
+      <span class="tx-sub">${t.time ? `<span class="tx-time">${esc(t.time)}</span> · ` : ''}${c ? esc(catName(c.id)) : t.ignored ? '' : '<span class="pill warn">без категории</span>'}${t.ignored ? `${c ? ' ' : ''}<span class="pill">не учитывается</span>` : ''}${tags.map(g => ` <span class="pill">${esc(g.name)}</span>`).join('')}${t.bank ? ` · ${esc(t.bank)}` : ''}</span>
       ${t.comment ? `<span class="tx-note">${esc(t.comment)}</span>` : ''}
     </span>
     <span class="${amountCls(t)}${!counted(t) ? ' transfer' : ''}">${money(t.amount)}</span>
@@ -253,8 +278,7 @@ function renderHome() {
   const m = monthOf(today()) <= monthOf(latest) ? monthOf(today()) : monthOf(latest);
   const rep = buildReport({ txs: S.txs, catMap: S.catMap, tagMap: S.tagMap, from: m + '-01', to: monthEnd(m), includeWork: false });
   const uncat = S.txs.filter(needsAnswer);
-  const pend = S.txs.filter(t => t.amount < 0 && isWork(t) && t.reimb !== 'done');
-  const pendSum = pend.reduce((s, t) => s - t.amount, 0);
+  const wb = workBalance(S.txs, S.catMap, S.tagMap);
   const top = rep.cats.slice(0, 4);
   const max = top.length ? top[0].sum : 1;
   const lastBackup = S.settings.lastBackup;
@@ -275,8 +299,8 @@ function renderHome() {
         <div class="card-h"><h2>Куда ушли деньги</h2><button class="link" type="button" data-act="go" data-tab="report">Весь отчёт</button></div>
         <div class="bars">${top.map(c => barRow(c, rep.exp, max)).join('')}</div>
       </section>` : ''}
-    ${pend.length ? `<button class="alert soft" type="button" data-act="pending">
-        <span><b>Ждут возмещения: ${rub(pendSum)}</b><span class="muted"> · ${pend.length} ${plural(pend.length, 'рабочая трата', 'рабочие траты', 'рабочих трат')}</span></span><span aria-hidden="true">›</span></button>` : ''}
+    ${wb.list.length ? `<button class="alert soft" type="button" data-act="work">
+        <span><b>${wb.left > 0 ? `Рабочие траты: осталось вернуть ${rub(wb.left)}` : wb.left < 0 ? `Рабочие траты: возмещено больше на ${rub(-wb.left)}` : 'Рабочие траты возмещены полностью'}</b><span class="muted"> · потрачено ${rub(wb.spent)}, возмещено ${rub(wb.back)}</span></span><span aria-hidden="true">›</span></button>` : ''}
     <div class="btn-row">
       <button class="primary" type="button" data-act="upload">Загрузить выписки</button>
       <button class="secondary" type="button" data-act="add">Добавить вручную</button>
@@ -293,7 +317,7 @@ const homeActions = {
   upload: () => $('#file-in').click(),
   add: () => editTx(null),
   go: (el) => setTab(el.dataset.tab),
-  pending: () => { S.ops.tag = 'pending'; S.ops.cat = 'all'; S.ops.q = ''; setTab('ops'); },
+  work: () => { S.ops.tag = 'work'; S.ops.cat = 'all'; S.ops.q = ''; S.ops.range = null; setTab('ops'); },
   backup: () => doBackup(),
 };
 function plural(n, one, few, many) {
@@ -315,13 +339,13 @@ function opsFiltered() {
   const o = S.ops;
   const q = normText(o.q);
   let list;
-  if (o.tag === 'pending') list = S.txs.filter(t => t.amount < 0 && isWork(t) && t.reimb !== 'done');
+  if (o.tag === 'work' || o.tag === 'pending') list = S.txs.filter(t => !t.ignored && (isWork(t) || isReimb(t)));
   else if (o.range) list = S.txs.filter(t => t.date >= o.range.from && t.date <= o.range.to);
   else list = S.txs.filter(t => t.date.startsWith(o.month));
   if (o.cat === 'none') list = list.filter(needsAnswer);
   else if (o.cat !== 'all') list = list.filter(t => t.category === o.cat);
   if (o.tag === 'ignored') list = list.filter(t => t.ignored);
-  else if (o.tag !== 'all' && o.tag !== 'pending') list = list.filter(t => (t.tags || []).includes(o.tag));
+  else if (!['all', 'pending', 'work'].includes(o.tag)) list = list.filter(t => (t.tags || []).includes(o.tag));
   if (q) {
     const qn = q.replace(',', '.').replace(/\s/g, '');
     list = list.filter(t => normText(t.desc + ' ' + (t.comment || '') + ' ' + catName(t.category)).includes(q) || String(Math.abs(t.amount) / 100).includes(qn));
@@ -332,9 +356,9 @@ function opsFiltered() {
 function renderOps() {
   const o = S.ops;
   const catOpts = [['all', 'Все категории'], ['none', 'Без категории'], ...S.cats.map(c => [c.id, c.name])];
-  const tagOpts = [['all', 'Все метки'], ['pending', 'Ждут возмещения'], ['ignored', 'Не учитываются'], ...S.tags.map(t => [t.id, t.name])];
+  const tagOpts = [['all', 'Все операции'], ['work', 'Рабочие траты и возмещения'], ['ignored', 'Не учитываются'], ...S.tags.map(t => [t.id, 'Метка: ' + t.name])];
   let period;
-  if (o.tag === 'pending') period = `<p class="muted">Рабочие траты за всё время, которые ещё не возместили.</p>`;
+  if (o.tag === 'work' || o.tag === 'pending') period = `<p class="muted">Рабочие траты и их возмещения за всё время.</p>`;
   else if (o.range) period = `<div class="range-bar"><span>${dateDots(o.range.from)} – ${dateDots(o.range.to)}</span><button class="link" type="button" data-act="by-month">по месяцам</button></div>`;
   else period = `<nav class="month" aria-label="Месяц">
       <button class="round" type="button" data-act="prev" aria-label="Предыдущий месяц">‹</button>
@@ -361,15 +385,6 @@ function renderOps() {
     cat: (el) => { o.cat = el.value; renderOps(); },
     tag: (el) => { o.tag = el.value; renderOps(); },
     edit: (el) => editTx(S.byId.get(el.dataset.id)),
-    bulk: () => { $('#bulk-a').hidden = true; $('#bulk-b').hidden = false; },
-    'bulk-no': () => { $('#bulk-a').hidden = false; $('#bulk-b').hidden = true; },
-    'bulk-yes': async () => {
-      const list = opsFiltered();
-      for (const t of list) t.reimb = 'done';
-      await saveTxs(list);
-      toast(`Отмечено возмещёнными: ${list.length}`);
-      render();
-    },
   });
 }
 
@@ -383,14 +398,11 @@ function fillOps() {
     if (!counted(t)) continue;
     if (t.amount < 0) exp -= t.amount; else inc += t.amount;
   }
+  const isWorkView = S.ops.tag === 'work' || S.ops.tag === 'pending';
+  const wbv = isWorkView ? workBalance(list, S.catMap, S.tagMap) : null;
   body.innerHTML = `
-    <div class="sumline"><span>Расходы <b>${exp ? MINUS : ''}${rub(exp)}</b></span><span>Доходы <b class="pos">+${rub(inc)}</b></span><span class="muted">${list.length} опер.</span></div>
-    ${S.ops.tag === 'pending' && list.length ? `<div class="note">
-        <div class="btn-row" id="bulk-a"><button class="secondary" type="button" data-act="bulk">Отметить все показанные возмещёнными</button></div>
-        <div class="btn-row" id="bulk-b" hidden><span>Отметить ${list.length} на ${rub(exp)}?</span>
-          <button class="primary small" type="button" data-act="bulk-yes">Да, отметить</button>
-          <button class="secondary small" type="button" data-act="bulk-no">Нет</button></div>
-      </div>` : ''}
+    ${isWorkView ? `<div class="sumline"><span>Потрачено <b>${rub(wbv.spent)}</b></span><span>Возмещено <b class="pos">${rub(wbv.back)}</b></span><span>${wbv.left >= 0 ? 'Осталось вернуть' : 'Переплата'} <b>${rub(Math.abs(wbv.left))}</b></span></div>`
+      : `<div class="sumline"><span>Расходы <b>${exp ? MINUS : ''}${rub(exp)}</b></span><span>Доходы <b class="pos">+${rub(inc)}</b></span><span class="muted">${list.length} опер.</span></div>`}
     ${list.length ? txListByDay(list) : `<div class="empty">${S.txs.length ? 'Ничего не нашлось. Попробуйте другой месяц или фильтр.' : 'Операций пока нет. Загрузите выписку на вкладке «Обзор».'}</div>`}`;
 }
 
@@ -420,17 +432,13 @@ function editTx(t) {
       </div>
     `}
     <div class="group"><div class="group-h">Категория</div>
-      <fieldset class="chips" id="e-cats" aria-label="Категория">${chipsHtml('cat', fittingCats(dir), t ? t.category : null)}<button class="chip-add" type="button" data-act="newcat">+ категория</button></fieldset>
+      <fieldset class="chips" id="e-cats" aria-label="Категория">${catChipsHtml('cat', dir, t ? t.category : null)}<button class="chip-add" type="button" data-act="newcat">+ категория</button></fieldset>
       ${newCatRowHtml('e')}</div>
     <div class="group"><div class="group-h">Метки</div>
       <fieldset class="chips" id="e-tags" aria-label="Метки">${chipsHtml('tag', S.tags, tagsSel, 'checkbox')}
         <button class="chip-add" type="button" data-act="newtag">+ метка</button></fieldset>
       <div class="add-row" id="newtag-row" hidden><input id="newtag" maxlength="30" placeholder="Название метки" autocomplete="off" aria-label="Название новой метки"><button type="button" class="secondary small" data-act="newtag-ok">Добавить</button></div>
     </div>
-    <fieldset class="seg" id="e-reimb" ${t && isWork(t) ? '' : 'hidden'}><legend class="vh">Возмещение</legend>
-      <input type="radio" name="reimb" id="r-p" value="pending" ${!t || t.reimb !== 'done' ? 'checked' : ''}><label for="r-p">Ждёт возмещения</label>
-      <input type="radio" name="reimb" id="r-d" value="done" ${t && t.reimb === 'done' ? 'checked' : ''}><label for="r-d">Возмещено</label>
-    </fieldset>
     <label class="field" for="e-comment">Комментарий<input id="e-comment" maxlength="200" value="${esc(t ? t.comment || '' : '')}" placeholder="Например, поездка к поставщику" autocomplete="off"></label>
     <label class="check ignore-box"><input type="checkbox" id="e-ign" ${t && t.ignored ? 'checked' : ''}><span><b>Не учитывать</b><br><span class="muted small">Операция останется в списке, но не попадёт ни в расходы, ни в доходы, ни в отчёт.</span></span></label>
     ${canRule ? ruleBoxHtml('e', t.key, sameKey > 0 && !t.ignored, sameKey) : ''}
@@ -439,13 +447,9 @@ function editTx(t) {
     ${t ? `<div class="del-zone"><button class="text-danger" type="button" data-act="del" id="e-del">Удалить операцию</button>
       <span id="e-delc" hidden>Точно удалить? <button class="danger small" type="button" data-act="del-yes">Да</button> <button class="secondary small" type="button" data-act="del-no">Нет</button></span></div>` : ''}
   </form>`;
-  const refreshReimb = () => {
-    const sel = $$('input[name="tag"]:checked', sheet).map(i => i.value);
-    $('#e-reimb', sheet).hidden = !sel.some(id => S.tagMap.get(id) && S.tagMap.get(id).reimb);
-  };
   openSheet(html, {
     close: closeSheet,
-    dir: (el) => { $('#e-cats', sheet).innerHTML = chipsHtml('cat', fittingCats(el.value), null) + '<button class="chip-add" type="button" data-act="newcat">+ категория</button>'; },
+    dir: (el) => { $('#e-cats', sheet).innerHTML = catChipsHtml('cat', el.value, null) + '<button class="chip-add" type="button" data-act="newcat">+ категория</button>'; },
     newcat: () => showNewCat('e'),
     'newcat-ok': () => addCatInline('e', 'cat', isNew ? ($('input[name="dir"]:checked', sheet) || {}).value || 'out' : dir),
     newtag: () => { $('#newtag-row', sheet).hidden = false; $('#newtag', sheet).focus(); },
@@ -489,8 +493,7 @@ function editTx(t) {
       target.ignored = ignored;
       target.tags = tags;
       target.comment = comment;
-      if (isWork(target)) target.reimb = ($('input[name="reimb"]:checked', sheet) || {}).value || 'pending';
-      else target.reimb = null;
+      target.reimb = null;
       const changed = [target];
       const ruleBox = $('#e-rule', sheet);
       if (ruleBox && ruleBox.checked && (target.category || ignored)) {
@@ -514,7 +517,6 @@ function editTx(t) {
   const baseChange = sheet.onchange;
   sheet.onchange = (e) => {
     baseChange(e);
-    if (e.target.name === 'tag') refreshReimb();
     // «Не учитывать» обычно про одну операцию: не распространять на всех получателей без явного согласия.
     if (e.target.id === 'e-ign' && e.target.checked && $('#e-rule', sheet)) $('#e-rule', sheet).checked = false;
   };
@@ -610,7 +612,7 @@ function renderQueue() {
       ${hintCat ? `<div class="hint">Похоже на перевод между своими счетами: есть встречная операция ${money(hintCat.amount)} в ${esc(hintCat.bank)} ${dateDots(hintCat.date)}${hintCat.time ? ' в ' + esc(hintCat.time) : ''}. Если выбрать «Между своими счетами», она отметится тоже.</div>` : ''}
       ${g.items.length > 1 ? `<ul class="q-ex">${g.items.slice(0, 4).map(t => `<li><span>${dateDots(t.date)}${t.time ? ' ' + esc(t.time) : ''}</span><span class="${amountCls(t)}">${money(t.amount)}</span></li>`).join('')}${g.items.length > 4 ? `<li class="muted">и ещё ${g.items.length - 4}</li>` : ''}</ul>` : ''}
       <div class="group"><div class="group-h">${g.dir === 'out' ? 'Что это за трата?' : 'Что это за поступление?'}</div>
-        <fieldset class="chips" aria-label="Категория">${chipsHtml('qcat', fittingCats(g.dir), preselect)}<button class="chip-add" type="button" data-act="newcat">+ категория</button></fieldset>
+        <fieldset class="chips" aria-label="Категория">${catChipsHtml('qcat', g.dir, preselect)}<button class="chip-add" type="button" data-act="newcat">+ категория</button></fieldset>
         ${newCatRowHtml('q')}
         <button class="link left" type="button" data-act="cats">Переименовать или удалить категории</button></div>
       <details class="more"><summary>Метка и комментарий</summary>
@@ -702,6 +704,7 @@ function renderReport() {
   const banks = [...new Set(S.txs.map(t => t.bank).filter(Boolean))].sort();
   const rep = buildReport({ txs: S.txs, catMap: S.catMap, tagMap: S.tagMap, from: r.from, to: r.to, includeWork: r.includeWork, bank: r.bank });
   const max = rep.cats.length ? rep.cats[0].sum : 1;
+  const allWork = workBalance(S.txs, S.catMap, S.tagMap);
   const mMax = Math.max(1, ...rep.months.map(m => rep.byMonth.get(m) || 0));
   const presets = [['month', 'Этот месяц'], ['prev', 'Прошлый месяц'], ['3m', '3 месяца'], ['year', 'Этот год'], ['custom', 'Свой период']];
   screen.innerHTML = `<header class="scr-head"><h1>Отчёт</h1></header>
@@ -731,18 +734,19 @@ function renderReport() {
       <h2>Расходы по месяцам</h2>
       <div class="readout" id="m-read"><b>${esc(monthTitle(rep.months[rep.months.length - 1]))}</b> · ${rub(rep.byMonth.get(rep.months[rep.months.length - 1]) || 0)}</div>
       <div class="cols" style="--n:${rep.months.length}">
-        <div class="cols-grid"><span class="gl" style="bottom:100%"><i>${rub(mMax)}</i></span><span class="gl" style="bottom:50%"><i>${rub(mMax / 2)}</i></span></div>
+        <div class="cols-grid"><span class="gl" style="bottom:100%"><i>${rub(Math.round(mMax / 100) * 100)}</i></span><span class="gl" style="bottom:50%"><i>${rub(Math.round(mMax / 200) * 100)}</i></span></div>
         ${rep.months.map(m => { const v = rep.byMonth.get(m) || 0; return `<button class="col" type="button" data-act="mread" data-m="${m}" aria-label="${esc(monthTitle(m))}: ${rub(v)}"><span class="col-bar"><span style="height:${v ? Math.max(2, v / mMax * 100) : 0}%"></span></span><span class="col-l">${esc(monthShort(m))}</span></button>`; }).join('')}
       </div>
     </section>` : ''}
-    ${rep.work.count ? `<section class="card">
-      <h2>Рабочие траты</h2>
+    ${rep.work.list.length || allWork.list.length ? `<section class="card">
+      <div class="card-h"><h2>Рабочие траты — баланс</h2><button class="link" type="button" data-act="work-ops">Операции</button></div>
       <div class="split three">
-        <div><span class="eyebrow">Всего</span><span class="val">${rub(rep.work.total)}</span></div>
-        <div><span class="eyebrow">Возмещено</span><span class="val pos">${rub(rep.work.done)}</span></div>
-        <div><span class="eyebrow">Ждут</span><span class="val">${rub(rep.work.pending)}</span></div>
+        <div><span class="eyebrow">Потрачено</span><span class="val">${rub(rep.work.spent)}</span></div>
+        <div><span class="eyebrow">Возмещено</span><span class="val pos">${rub(rep.work.back)}</span></div>
+        <div><span class="eyebrow">${rep.work.left >= 0 ? 'Осталось' : 'Переплата'}</span><span class="val">${rub(Math.abs(rep.work.left))}</span></div>
       </div>
-      <p class="muted small">${r.includeWork ? 'Включены в расходы выше.' : 'Не входят в расходы выше. Поступления с категорией «Возмещение рабочих трат» тоже не считаются доходом.'}</p>
+      ${rep.work.subs.length ? `<div class="bars">${rep.work.subs.map(e => barRow(e, rep.work.spent, rep.work.subs[0].sum)).join('')}</div>` : ''}
+      <p class="muted small">За период выше. За всё время ${allWork.left > 0 ? `осталось вернуть <b>${rub(allWork.left)}</b>` : allWork.left < 0 ? `возмещено больше на <b>${rub(-allWork.left)}</b>` : 'всё возмещено'} (потрачено ${rub(allWork.spent)}, возмещено ${rub(allWork.back)}). ${r.includeWork ? 'Сейчас рабочие траты включены в расходы выше.' : 'В личные расходы и доходы рабочие траты и возмещения не входят.'}</p>
     </section>` : ''}
     <div class="btn-row">
       <button class="primary" type="button" data-act="xlsx" ${rep.rows.length ? '' : 'disabled'}>Выгрузить в Excel</button>
@@ -758,6 +762,7 @@ function renderReport() {
     bank: (el) => { r.bank = el.value; renderReport(); },
     work: (el) => { r.includeWork = el.checked; renderReport(); },
     queue: () => setTab('queue'),
+    'work-ops': () => { S.ops.tag = 'work'; S.ops.cat = 'all'; S.ops.q = ''; S.ops.range = null; setTab('ops'); },
     ignored: () => { S.ops.tag = 'ignored'; S.ops.cat = 'all'; S.ops.q = ''; S.ops.range = { from: r.from, to: r.to }; setTab('ops'); },
     cat: (el) => {
       S.ops.cat = el.dataset.cat || 'none'; S.ops.tag = 'all'; S.ops.q = '';
@@ -784,28 +789,30 @@ function renderMore() {
   const used = new Map();
   for (const t of S.txs) if (t.category) used.set(t.category, (used.get(t.category) || 0) + 1);
   const typeName = { out: 'Расходы', in: 'Доходы', transfer: 'Переводы между своими' };
-  const catList = (type) => S.cats.filter(c => c.type === type).map(c => `
+  const groups = S.cats.filter(c => c.group);
+  const catItems = (list) => list.map(c => `
     <li><input value="${esc(c.name)}" maxlength="40" data-change="cat-rename" data-id="${esc(c.id)}" aria-label="Название категории «${esc(c.name)}»">
       <button class="x" type="button" data-act="cat-del" data-id="${esc(c.id)}" aria-label="Удалить категорию «${esc(c.name)}»">Удалить</button></li>`).join('');
+  const catList = (type) => catItems(S.cats.filter(c => c.type === type && !c.group && !c.parent));
   const rules = [...S.rules].sort((a, b) => a.value.localeCompare(b.value));
   const fold = (k) => (S.settings.openFold === k ? 'open' : '');
   screen.innerHTML = `<header class="scr-head"><h1>Ещё</h1></header>
 
     <details class="card fold" ${fold('cats')} data-fold="cats"><summary><h2>Категории</h2><span class="muted">${S.cats.length}</span></summary>
       ${['out', 'in', 'transfer'].map(type => `<div class="group"><div class="group-h">${typeName[type]}</div><ul class="edit-list">${catList(type)}</ul></div>`).join('')}
+      ${groups.map(g => `<div class="group"><div class="group-h">${esc(g.name)} — подкатегории${g.work ? ' (к возмещению, не входят в личный бюджет)' : ''}</div><ul class="edit-list">${catItems(S.cats.filter(c => c.parent === g.id))}</ul></div>`).join('')}
       <form class="add-row" data-submit="cat-add">
         <input id="nc-name" maxlength="40" placeholder="Новая категория" autocomplete="off" aria-label="Название новой категории">
-        <select id="nc-type" aria-label="Тип"><option value="out">расход</option><option value="in">доход</option></select>
+        <select id="nc-type" aria-label="Тип"><option value="out">расход</option><option value="in">доход</option>${groups.map(g => `<option value="sub:${esc(g.id)}">${esc(g.name)} (подкатегория)</option>`).join('')}</select>
         <button class="secondary small" type="submit">Добавить</button>
       </form>
       <div id="cat-del-box"></div>
     </details>
 
     <details class="card fold" ${fold('tags')} data-fold="tags"><summary><h2>Метки</h2><span class="muted">${S.tags.length}</span></summary>
-      <p class="muted small">Метка добавляется к операции поверх категории: «Такси» + «Рабочая». Траты с меткой «к возмещению» учитываются отдельно, и их можно отмечать возмещёнными.</p>
+      <p class="muted small">Метка — свободная пометка поверх категории, например «Отпуск» или «Подарок маме». Рабочие траты отмечаются категориями группы «Рабочая».</p>
       <ul class="edit-list">${S.tags.map(g => `<li class="tag-li">
         <input value="${esc(g.name)}" maxlength="30" data-change="tag-rename" data-id="${esc(g.id)}" aria-label="Название метки «${esc(g.name)}»">
-        <label class="check inline"><input type="checkbox" ${g.reimb ? 'checked' : ''} data-change="tag-reimb" data-id="${esc(g.id)}"><span>к возмещению</span></label>
         <button class="x" type="button" data-act="tag-del" data-id="${esc(g.id)}" aria-label="Удалить метку «${esc(g.name)}»">Удалить</button></li>`).join('')}</ul>
       <form class="add-row" data-submit="tag-add">
         <input id="nt-name" maxlength="30" placeholder="Новая метка" autocomplete="off" aria-label="Название новой метки">
@@ -868,6 +875,7 @@ function renderMore() {
     },
     'cat-del': (el) => {
       const c = S.catMap.get(el.dataset.id); if (!c) return;
+      if (c.group) { toast('Группу удалить нельзя, только её подкатегории'); return; }
       const n = used.get(c.id) || 0;
       const others = S.cats.filter(x => x.id !== c.id && (x.type === c.type || x.type === 'transfer'));
       $('#cat-del-box', screen).innerHTML = `<div class="note">
@@ -891,22 +899,21 @@ function renderMore() {
       reindex(); toast('Категория удалена'); render();
     },
     'cat-add': async () => {
-      const name = $('#nc-name', screen).value.trim(); const type = $('#nc-type', screen).value;
+      const name = $('#nc-name', screen).value.trim(); const sel = $('#nc-type', screen).value;
       if (!name) return;
-      if (S.cats.some(c => c.name.toLowerCase() === name.toLowerCase() && c.type === type)) { toast('Такая категория уже есть'); return; }
-      S.cats.push({ id: 'c' + uid(), name, type }); await saveCats(); S.settings.openFold = 'cats'; render(); toast('Категория добавлена');
+      const parent = sel.startsWith('sub:') ? S.catMap.get(sel.slice(4)) : null;
+      const type = parent ? parent.type : sel;
+      if (S.cats.some(c => c.name.toLowerCase() === name.toLowerCase() && c.type === type && (c.parent || null) === (parent ? parent.id : null))) { toast('Такая категория уже есть'); return; }
+      const nc = { id: 'c' + uid(), name, type };
+      if (parent) { nc.parent = parent.id; if (parent.work) nc.work = true; }
+      const lastSame = S.cats.map(c => (parent ? c.parent === parent.id || c.id === parent.id : c.type === type && !c.parent && !c.group)).lastIndexOf(true);
+      S.cats.splice(lastSame + 1, 0, nc);
+      await saveCats(); S.settings.openFold = 'cats'; render(); toast(parent ? `Подкатегория «${name}» добавлена в «${parent.name}»` : 'Категория добавлена');
     },
     'tag-rename': async (el) => {
       const g = S.tagMap.get(el.dataset.id); const v = el.value.trim();
       if (!g) return; if (!v) { el.value = g.name; return; }
       g.name = v; await saveTags(); toast('Метка переименована');
-    },
-    'tag-reimb': async (el) => {
-      const g = S.tagMap.get(el.dataset.id); if (!g) return;
-      g.reimb = el.checked; await saveTags();
-      const ch = S.txs.filter(t => (t.tags || []).includes(g.id));
-      ch.forEach(updateReimb); await saveTxs(ch);
-      toast(g.reimb ? 'Траты с этой меткой ждут возмещения' : 'Метка больше не про возмещение');
     },
     'tag-del': async (el) => {
       const id = el.dataset.id;
