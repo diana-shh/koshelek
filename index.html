@@ -284,6 +284,14 @@ details.fold[open] { gap: 14px; }
 .edit-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: end; }
 .edit-list li.tag-li { grid-template-columns: minmax(0, 1fr) auto auto; }
 .edit-list input { border-bottom-color: var(--hair); }
+/* Смахивание строки влево открывает оранжевую кнопку «Удалить». */
+.edit-list li.swipe { display: block; position: relative; overflow: hidden; }
+.swipe-act { position: absolute; top: 0; right: 0; bottom: 0; width: 104px; border: 0; background: #FFA771; color: #1E2122; font-size: 16px; cursor: pointer; opacity: 0; }
+.swipe.open .swipe-act, .swipe.dragging .swipe-act, .swipe-act:focus-visible { opacity: 1; }
+.swipe.dragging input { -webkit-user-select: none; user-select: none; }
+.swipe-row { position: relative; background: var(--bg); transition: transform .2s ease; touch-action: pan-y; }
+.swipe.open .swipe-row { transform: translateX(-104px); }
+.swipe.dragging .swipe-row { transition: none; }
 .edit-list input:focus { border-bottom-color: var(--ink); outline: none; }
 .rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .rules li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid var(--hair); }

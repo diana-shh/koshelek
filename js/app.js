@@ -11,7 +11,7 @@ import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
 import { buildReport, exportXlsx, chartPng, isWorkTx, isReimbTx, workBalance, catLabel } from './report.js';
 import { salaryCfg, salaryState, salaryPeriod, payoutList, rateOn, scheduleText, dm } from './salary.js';
 
-const APP_VERSION = '1.8.0';
+const APP_VERSION = '1.8.1';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -957,9 +957,10 @@ function renderMore() {
   for (const t of S.txs) if (t.category) used.set(t.category, (used.get(t.category) || 0) + 1);
   const typeName = { out: 'Расходы', in: 'Доходы', transfer: 'Переводы между своими' };
   const groups = S.cats.filter(c => c.group);
+  // Строка категории: смахнуть влево — откроется оранжевая кнопка «Удалить».
   const catItems = (list) => list.map(c => `
-    <li><input value="${esc(c.name)}" maxlength="40" data-change="cat-rename" data-id="${esc(c.id)}" aria-label="Название категории «${esc(c.name)}»">
-      <button class="x" type="button" data-act="cat-del" data-id="${esc(c.id)}" aria-label="Удалить категорию «${esc(c.name)}»">Удалить</button></li>`).join('');
+    <li class="swipe"><button class="swipe-act" type="button" data-act="cat-del" data-id="${esc(c.id)}" aria-label="Удалить категорию «${esc(c.name)}»">Удалить</button>
+      <div class="swipe-row"><input value="${esc(c.name)}" maxlength="40" data-change="cat-rename" data-id="${esc(c.id)}" aria-label="Название категории «${esc(c.name)}»"></div></li>`).join('');
   const catList = (type) => catItems(S.cats.filter(c => c.type === type && !c.group && !c.parent));
   const rules = [...S.rules].sort((a, b) => a.value.localeCompare(b.value));
   const fold = (k) => (S.settings.openFold === k ? 'open' : '');
@@ -975,7 +976,6 @@ function renderMore() {
         <select id="nc-type" aria-label="Тип"><option value="out">расход</option><option value="in">доход</option>${groups.map(g => `<option value="sub:${esc(g.id)}">${esc(g.name)} (подкатегория)</option>`).join('')}</select>
         <button class="secondary small" type="submit">Добавить</button>
       </form>
-      <div id="cat-del-box"></div>
     </details>
 
     <details class="card fold" ${fold('tags')} data-fold="tags"><summary><h2>Метки</h2><span class="muted">${S.tags.length}</span></summary>
@@ -1056,7 +1056,6 @@ function renderMore() {
     <section class="card">
       <h2>Оформление</h2>
       <fieldset class="chips" aria-label="Тема">${[['auto', 'Как в телефоне'], ['light', 'Светлая'], ['dark', 'Тёмная'], ['color', 'Цветная']].map(([v, n]) => `<label class="chip"><input type="radio" name="theme" value="${v}" ${(S.settings.theme || 'auto') === v ? 'checked' : ''} data-change="theme"><span>${n}</span></label>`).join('')}</fieldset>
-      <p class="muted small">Светлая — чёрный текст на белом фоне, тёмная — белый текст на чёрном, цветная — серо-зелёный фон с персиковыми акцентами. «Как в телефоне» переключается вместе с темой iPhone.</p>
     </section>
 
     <section class="card">
@@ -1072,6 +1071,8 @@ function renderMore() {
     </section>`;
   db.persist().then(ok => { const s = $('#persist-st'); if (s) s.textContent = ok ? 'Хранилище закреплено: телефон не удалит данные сам.' : ''; });
   for (const d of $$('details[data-fold]', screen)) d.addEventListener('toggle', () => { if (d.open) S.settings.openFold = d.dataset.fold; });
+  openSwipe = null;
+  setupSwipes(screen);
 
   bind(screen, {
     'cat-rename': async (el) => {
@@ -1083,26 +1084,16 @@ function renderMore() {
       const c = S.catMap.get(el.dataset.id); if (!c) return;
       if (c.group) { toast('Группу удалить нельзя, только её подкатегории'); return; }
       const n = used.get(c.id) || 0;
-      const others = S.cats.filter(x => x.id !== c.id && (x.type === c.type || x.type === 'transfer'));
-      $('#cat-del-box', screen).innerHTML = `<div class="note">
-        <p>Удалить категорию «${esc(c.name)}»?${n ? ` В ней ${n} ${plural(n, 'операция', 'операции', 'операций')}.` : ''}</p>
-        ${n ? `<label class="field" for="cd-to">Куда перенести операции<select id="cd-to"><option value="">Никуда, вернуть в «Разобрать»</option>${others.map(o => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join('')}</select></label>` : ''}
-        <div class="btn-row"><button class="danger small" type="button" data-act="cat-del-yes" data-id="${esc(c.id)}">Да, удалить</button><button class="secondary small" type="button" data-act="cat-del-no">Нет</button></div></div>`;
-    },
-    'cat-del-no': () => { $('#cat-del-box', screen).innerHTML = ''; },
-    'cat-del-yes': async (el) => {
-      const id = el.dataset.id;
-      const to = ($('#cd-to', screen) || {}).value || null;
-      const ch = [];
-      for (const t of S.txs) if (t.category === id) { t.category = to; t.catBy = to ? 'manual' : null; ch.push(t); }
-      const deadRules = S.rules.filter(r => r.category === id);
-      if (to) for (const r of deadRules) r.category = to;
-      S.rules = to ? S.rules : S.rules.filter(r => r.category !== id);
-      S.cats = S.cats.filter(c => c.id !== id);
-      await saveCats();
-      await saveTxs(ch);
-      if (to) await db.putMany('rules', deadRules); else await db.delMany('rules', deadRules.map(r => r.id));
-      reindex(); toast('Категория удалена'); render();
+      const others = S.cats.filter(x => x.id !== c.id && !x.group && (x.type === c.type || x.type === 'transfer'));
+      openSheet(`<div class="sheet-form">
+        <div class="sheet-head"><h3>Удалить категорию</h3><button class="ghost" type="button" data-act="close">Отмена</button></div>
+        <p>Удалить «${esc(catName(c.id))}»?${n ? ` В ней ${n} ${plural(n, 'операция', 'операции', 'операций')}.` : ''}</p>
+        ${n ? `<label class="field" for="cd-to">Куда перенести операции<select id="cd-to"><option value="">Никуда, вернуть в «Разобрать»</option>${others.map(o => `<option value="${esc(o.id)}">${esc(catName(o.id))}</option>`).join('')}</select></label>` : ''}
+        <button class="danger" type="button" data-act="yes">Удалить</button>
+      </div>`, {
+        close: closeSheet,
+        yes: async () => { const to = ($('#cd-to', sheet) || {}).value || null; closeSheet(); await deleteCategory(c.id, to); },
+      });
     },
     'cat-add': async () => {
       const name = $('#nc-name', screen).value.trim(); const sel = $('#nc-type', screen).value;
@@ -1234,6 +1225,74 @@ function renderMore() {
     },
   });
 }
+
+/** Удалить категорию: операции перенести в to или вернуть в «Разобрать»; правила — туда же или удалить. */
+async function deleteCategory(id, to) {
+  const ch = [];
+  for (const t of S.txs) if (t.category === id) { t.category = to; t.catBy = to ? 'manual' : null; ch.push(t); }
+  const deadRules = S.rules.filter(r => r.category === id);
+  if (to) for (const r of deadRules) r.category = to;
+  S.rules = to ? S.rules : S.rules.filter(r => r.category !== id);
+  S.cats = S.cats.filter(c => c.id !== id);
+  await saveCats();
+  await saveTxs(ch);
+  if (to) await db.putMany('rules', deadRules); else await db.delMany('rules', deadRules.map(r => r.id));
+  reindex(); S.settings.openFold = 'cats'; toast('Категория удалена'); render();
+}
+
+/** Смахивание строк влево (категории в «Ещё»): открывает кнопку «Удалить». Открыта одна строка за раз. */
+const SWIPE_W = 104;
+let openSwipe = null;
+function closeSwipe(li) {
+  if (!li) return;
+  li.classList.remove('open');
+  if (openSwipe === li) openSwipe = null;
+}
+function setupSwipes(root) {
+  for (const li of root.querySelectorAll('li.swipe')) {
+    const row = li.querySelector('.swipe-row');
+    let x0 = 0, y0 = 0, base = 0, dx = 0, mode = null, pid = null;
+    row.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      x0 = e.clientX; y0 = e.clientY; base = li.classList.contains('open') ? -SWIPE_W : 0; dx = base; mode = null; pid = e.pointerId;
+    });
+    row.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== pid) return;
+      const mx = e.clientX - x0, my = e.clientY - y0;
+      if (!mode) {
+        if (Math.abs(mx) > 8 && Math.abs(mx) > Math.abs(my)) {
+          mode = 'x'; li.classList.add('dragging');
+          try { row.setPointerCapture(pid); } catch {}
+          if (openSwipe && openSwipe !== li) closeSwipe(openSwipe);
+          if (document.activeElement && li.contains(document.activeElement)) document.activeElement.blur();
+          try { window.getSelection().removeAllRanges(); } catch {}
+        } else if (Math.abs(my) > 8) mode = 'y';
+      }
+      if (mode === 'x') { dx = Math.max(-SWIPE_W, Math.min(0, base + mx)); row.style.transform = `translateX(${dx}px)`; const inp = row.querySelector('input'); if (inp) inp.scrollLeft = 0; e.preventDefault(); }
+    });
+    let swiped = false;
+    const end = (e) => {
+      if (e.pointerId !== pid) return;
+      pid = null;
+      if (mode === 'x') {
+        li.classList.remove('dragging'); row.style.transform = '';
+        const inp = row.querySelector('input'); if (inp) { inp.scrollLeft = 0; requestAnimationFrame(() => { inp.scrollLeft = 0; }); }
+        try { window.getSelection().removeAllRanges(); } catch {}
+        if (dx < -SWIPE_W / 2) { li.classList.add('open'); openSwipe = li; } else closeSwipe(li);
+        swiped = true; setTimeout(() => { swiped = false; }, 400);
+      }
+      mode = null;
+    };
+    row.addEventListener('pointerup', end);
+    row.addEventListener('pointercancel', end);
+    // после смахивания не ставить курсор в поле названия
+    row.addEventListener('click', (e) => { if (swiped) { e.preventDefault(); e.stopPropagation(); } }, true);
+    // с клавиатуры: фокус на кнопке открывает строку
+    li.querySelector('.swipe-act').addEventListener('focus', () => { if (openSwipe && openSwipe !== li) closeSwipe(openSwipe); li.classList.add('open'); openSwipe = li; });
+  }
+}
+// Нажатие в любом другом месте закрывает открытую строку.
+document.addEventListener('pointerdown', (e) => { if (openSwipe && !openSwipe.contains(e.target)) closeSwipe(openSwipe); }, true);
 
 async function doBackup() {
   const data = await db.dumpAll();
