@@ -11,7 +11,7 @@ import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
 import { buildReport, exportXlsx, chartPng, isWorkTx, isReimbTx, workBalance, catLabel } from './report.js';
 import { salaryCfg, salaryState, salaryPeriod, payoutList, rateOn, scheduleText, dm } from './salary.js';
 
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '1.10.0';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -586,7 +586,7 @@ function editTx(t) {
     ` : `
       <div class="tx-head">
         <div class="big ${t.amount > 0 ? 'pos' : ''}">${money(t.amount)}</div>
-        <div class="muted">${esc(dateRu(t.date))}${t.time ? ', ' + esc(t.time) : ''} · ${esc(t.bank || 'вручную')}${t.account ? ' ' + esc(t.account) : ''}</div>
+        <div class="q-meta-row"><div class="muted">${esc(dateRu(t.date))}${t.time ? ', ' + esc(t.time) : ''} · ${esc(t.bank || 'вручную')}${t.account ? ' ' + esc(t.account) : ''}</div><button class="qbtn" type="button" data-act="day" aria-label="Что ещё было в этот день">?</button></div>
         <div class="raw">${esc(t.raw || t.desc || 'Без описания')}</div>
         ${t.bankCategory ? `<div class="muted small">Категория банка: «${esc(t.bankCategory)}»${t.mcc ? ` · MCC ${esc(t.mcc)}` : ''}</div>` : (t.mcc ? `<div class="muted small">MCC ${esc(t.mcc)}</div>` : '')}
       </div>
@@ -604,6 +604,8 @@ function editTx(t) {
     ${canRule ? ruleBoxHtml('e', t.key, sameKey > 0 && !t.ignored, sameKey) : ''}
     <p class="err" id="e-err" hidden></p>
     <button class="primary" type="submit">Сохранить</button>
+    ${t ? `<button class="secondary" type="button" data-act="split">Разделить на части</button>` : ''}
+    ${t && t.splitId ? `<p class="muted small">Это часть операции на ${rub(Math.abs(t.splitTotal || 0))}. <button class="link inline" type="button" data-act="unsplit">Объединить части обратно</button></p>` : ''}
     ${t ? `<div class="del-zone"><button class="text-danger" type="button" data-act="del" id="e-del">Удалить операцию</button>
       <span id="e-delc" hidden>Точно удалить? <button class="danger small" type="button" data-act="del-yes">Да</button> <button class="secondary small" type="button" data-act="del-no">Нет</button></span></div>` : ''}
   </form>`;
@@ -623,6 +625,9 @@ function editTx(t) {
       $('.chip-add', sheet).before(lab.firstElementChild);
       $('#newtag', sheet).value = ''; $('#newtag-row', sheet).hidden = true;
     },
+    day: () => openDayMoves([t.date], [t.id], () => editTx(t)),
+    split: () => splitTx(t),
+    unsplit: () => unsplitTx(t),
     del: () => { $('#e-del', sheet).hidden = true; $('#e-delc', sheet).hidden = false; },
     'del-no': () => { $('#e-del', sheet).hidden = false; $('#e-delc', sheet).hidden = true; },
     'del-yes': async () => {
@@ -681,6 +686,113 @@ function editTx(t) {
     if (e.target.id === 'e-ign' && e.target.checked && $('#e-rule', sheet)) $('#e-rule', sheet).checked = false;
   };
   if (isNew) setTimeout(() => { const a = $('#e-amount', sheet); if (a) a.focus(); }, 50);
+}
+
+// ---------- Что ещё было в этот день ----------
+function dayRow(t, mark) {
+  const c = t.category ? S.catMap.get(t.category) : null;
+  return `<div class="tx static${mark ? ' mark' : ''}"><span class="tx-main">
+    <span class="tx-title">${esc(prettyDesc(t.desc))}</span>
+    <span class="tx-sub"><span class="tx-time">${t.time ? esc(t.time) : 'время не указано'}</span> · ${esc(t.bank || 'вручную')}${t.account ? ' ' + esc(t.account) : ''} · ${c ? esc(catName(c.id)) : t.ignored ? 'не учитывается' : 'без категории'}</span>
+    ${t.comment ? `<span class="tx-note">${esc(t.comment)}</span>` : ''}</span>
+    <span class="${amountCls(t)}${!counted(t) ? ' transfer' : ''}">${money(t.amount)}</span></div>`;
+}
+/** Все движения по всем картам и счетам за эти дни; операции, о которых спрашиваем, выделены. */
+function openDayMoves(dates, markIds, back) {
+  const marks = new Set(markIds);
+  const days = [...new Set(dates)].sort().slice(-5);
+  const html = days.map(d => {
+    const list = S.txs.filter(t => t.date === d).sort((a, b) => (a.time || '99:99').localeCompare(b.time || '99:99'));
+    return `<section class="day"><div class="day-h"><span>${esc(dayTitle(d))}</span><span>${list.length} ${plural(list.length, 'операция', 'операции', 'операций')}</span></div>
+      <div class="list">${list.map(t => dayRow(t, marks.has(t.id))).join('')}</div></section>`;
+  }).join('');
+  openSheet(`<div class="sheet-form">
+    <div class="sheet-head"><h3>Что ещё было в этот день</h3><button class="ghost" type="button" data-act="${back ? 'back' : 'close'}">${back ? 'Назад' : 'Закрыть'}</button></div>
+    ${html}
+  </div>`, { back: () => back(), close: closeSheet });
+}
+
+// ---------- Разделить операцию на части ----------
+const kopStr = (k) => String(Math.abs(k) / 100).replace('.', ',');
+/** Варианты категорий списком: свои, группы с подкатегориями, для поступлений — «вернули за расход», переводы. */
+function catOptionsHtml(dir, sel) {
+  const opt = (c) => `<option value="${esc(c.id)}" ${c.id === sel ? 'selected' : ''}>${esc(catName(c.id))}</option>`;
+  let h = `<option value="">— разобрать потом —</option><optgroup label="${dir === 'out' ? 'Расходы' : 'Доходы'}">${S.cats.filter(c => c.type === dir && !c.group && !c.parent).map(opt).join('')}</optgroup>`;
+  for (const g of S.cats.filter(c => c.group && c.type === dir)) {
+    const subs = S.cats.filter(c => c.parent === g.id);
+    if (subs.length) h += `<optgroup label="${esc(g.name)}${g.work ? ' — к возмещению' : ''}">${subs.map(opt).join('')}</optgroup>`;
+  }
+  if (dir === 'in') h += `<optgroup label="Вернули за расход — уменьшит статью">${S.cats.filter(c => c.type === 'out' && !c.group && !c.work).map(opt).join('')}</optgroup>`;
+  h += `<optgroup label="Переводы">${S.cats.filter(c => c.type === 'transfer').map(opt).join('')}</optgroup>`;
+  return h;
+}
+/** Одна оплата за две разные вещи: первая часть — остаток, остальные вводятся. Части остаются связаны (splitId). */
+function splitTx(t) {
+  const dir = dirOf(t);
+  const total = Math.abs(t.amount);
+  const sign = t.amount < 0 ? -1 : 1;
+  const partHtml = (first, cat, note) => `<div class="part">
+    <div class="part-top">
+      <label class="amount small"><input class="p-amt" inputmode="decimal" placeholder="0" autocomplete="off" ${first ? 'readonly tabindex="-1"' : 'data-input="sum"'} aria-label="${first ? 'Остаток, ₽' : 'Сумма части, ₽'}"><span>₽</span></label>
+      ${first ? '<span class="muted small">остаток</span>' : '<button class="x" type="button" data-act="rm">Убрать</button>'}
+    </div>
+    <select class="p-cat" aria-label="Категория части">${catOptionsHtml(dir, cat)}</select>
+    <input class="p-note" maxlength="200" value="${esc(note || '')}" placeholder="Комментарий" autocomplete="off" aria-label="Комментарий к части">
+  </div>`;
+  const parts = () => $$('.part', sheet);
+  const others = () => parts().slice(1).map(p => parseMoney(p.querySelector('.p-amt').value) || 0);
+  const upd = () => {
+    const rest = total - others().reduce((s, v) => s + Math.abs(v), 0);
+    const first = parts()[0].querySelector('.p-amt');
+    first.value = rest > 0 ? kopStr(rest) : '0';
+    const left = $('#sp-left', sheet);
+    left.textContent = rest > 0 ? `Первой части остаётся ${rub(rest)}` : rest === 0 ? 'Первой части ничего не осталось — уменьшите другие' : `Части больше операции на ${rub(-rest)}`;
+    left.className = rest > 0 ? 'hint ok' : 'hint bad';
+  };
+  openSheet(`<form class="sheet-form" data-submit="save" novalidate>
+    <div class="sheet-head"><h3>Разделить операцию</h3><button class="ghost" type="button" data-act="back">Назад</button></div>
+    <div class="tx-head"><div class="big ${t.amount > 0 ? 'pos' : ''}">${money(t.amount)}</div>
+      <div class="muted">${esc(dateRu(t.date))}${t.time ? ', ' + esc(t.time) : ''} · ${esc(t.bank || 'вручную')}</div>
+      <div class="raw">${esc(t.raw || t.desc || 'Без описания')}</div></div>
+    <div class="parts" id="sp-parts">${partHtml(true, t.category, t.comment)}${partHtml(false, null, '')}</div>
+    <button class="chip-add self-start" type="button" data-act="add">+ ещё часть</button>
+    <p class="hint" id="sp-left"></p>
+    <p class="err" id="sp-err" hidden></p>
+    <button class="primary" type="submit">Разделить</button>
+  </form>`, {
+    back: () => editTx(t),
+    sum: () => upd(),
+    add: () => { $('#sp-parts', sheet).insertAdjacentHTML('beforeend', partHtml(false, null, '')); upd(); const a = $$('.p-amt', sheet).pop(); if (a) a.focus(); },
+    rm: (el) => { if (parts().length > 2) { el.closest('.part').remove(); upd(); } else toast('Нужно хотя бы две части'); },
+    save: async () => {
+      const err = (m) => { const e = $('#sp-err', sheet); e.textContent = m; e.hidden = false; };
+      const amts = others();
+      if (amts.some(v => !(v > 0))) return err('Укажите сумму каждой части или уберите лишнюю.');
+      const rest = total - amts.reduce((s, v) => s + v, 0);
+      if (rest <= 0) return err('Сумма частей больше операции.');
+      const ps = parts().map(p => ({ cat: p.querySelector('.p-cat').value || null, note: p.querySelector('.p-note').value.trim() }));
+      const splitId = t.splitId || t.id;
+      const splitTotal = t.splitTotal != null ? t.splitTotal : t.amount;
+      Object.assign(t, { amount: sign * rest, category: ps[0].cat, catBy: ps[0].cat ? 'manual' : null, comment: ps[0].note, splitId, splitTotal, reimb: null });
+      const created = amts.map((v, i) => ({ ...t, id: splitId + '-' + uid(), amount: sign * v, category: ps[i + 1].cat, catBy: ps[i + 1].cat ? 'manual' : null, comment: ps[i + 1].note, tags: [], ignored: false, ruleId: null, reimb: null, splitId, splitTotal }));
+      S.txs.push(...created); reindex();
+      await saveTxs([t, ...created]);
+      closeSheet(); toast(`Разделено на ${created.length + 1} ${plural(created.length + 1, 'часть', 'части', 'частей')}`); render();
+    },
+  });
+  upd();
+}
+/** Собрать части обратно в одну операцию (категория — как у первой части). */
+async function unsplitTx(t) {
+  const parts = S.txs.filter(x => x.splitId && x.splitId === t.splitId);
+  const main = parts.find(x => x.id === t.splitId) || parts[0];
+  main.amount = parts.reduce((s, x) => s + x.amount, 0);
+  delete main.splitId; delete main.splitTotal;
+  const rm = parts.filter(x => x !== main).map(x => x.id);
+  await db.delMany('tx', rm);
+  S.txs = S.txs.filter(x => !rm.includes(x.id)); reindex();
+  await saveTxs([main]);
+  closeSheet(); toast('Части объединены'); render();
 }
 
 const newCatRowHtml = (p) => `<div class="add-row" id="${p}-newcat-row" hidden><input id="${p}-newcat" maxlength="40" placeholder="Название новой категории" autocomplete="off" aria-label="Название новой категории"><button type="button" class="secondary small" data-act="newcat-ok">Добавить</button></div>`;
@@ -768,7 +880,7 @@ function renderQueue() {
   screen.innerHTML = `<header class="scr-head"><h1>Разобрать</h1><span class="muted">осталось ${total}</span></header>
     <article class="card q-card">
       <div class="q-title">${esc(prettyDesc(t0.desc))}</div>
-      <div class="q-meta"><b class="${g.sum > 0 ? 'pos' : ''}">${money(g.sum)}</b> · ${g.items.length > 1 ? `${g.items.length} ${plural(g.items.length, 'операция', 'операции', 'операций')} · ${dateDots(dates[0])}–${dateDots(dates[dates.length - 1])}` : esc(dateRu(t0.date)) + (t0.time ? ', ' + esc(t0.time) : '')} · ${esc(t0.bank || '')}</div>
+      <div class="q-meta-row"><div class="q-meta"><b class="${g.sum > 0 ? 'pos' : ''}">${money(g.sum)}</b> · ${g.items.length > 1 ? `${g.items.length} ${plural(g.items.length, 'операция', 'операции', 'операций')} · ${dateDots(dates[0])}–${dateDots(dates[dates.length - 1])}` : esc(dateRu(t0.date)) + ', ' + (t0.time ? esc(t0.time) : 'время не указано')} · ${esc(t0.bank || '')}</div><button class="qbtn" type="button" data-act="day" aria-label="Что ещё было в этот день">?</button></div>
       ${t0.bankCategory ? `<div class="muted small">Банк пишет: «${esc(t0.bankCategory)}»</div>` : ''}
       ${hintCat ? `<div class="hint">Похоже на перевод между своими счетами: есть встречная операция ${money(hintCat.amount)} в ${esc(hintCat.bank)} ${dateDots(hintCat.date)}${hintCat.time ? ' в ' + esc(hintCat.time) : ''}. Если выбрать «Между своими счетами», она отметится тоже.</div>` : ''}
       ${g.items.length > 1 ? `<ul class="q-ex">${g.items.slice(0, 4).map(t => `<li><span>${dateDots(t.date)}${t.time ? ' ' + esc(t.time) : ''}</span><span class="${amountCls(t)}">${money(t.amount)}</span></li>`).join('')}${g.items.length > 4 ? `<li class="muted">и ещё ${g.items.length - 4}</li>` : ''}</ul>` : ''}
@@ -776,10 +888,10 @@ function renderQueue() {
         <fieldset class="chips" aria-label="Категория">${catChipsHtml('qcat', g.dir, preselect)}<button class="chip-add" type="button" data-act="newcat">+ категория</button></fieldset>
         ${newCatRowHtml('q')}
         <button class="link left" type="button" data-act="cats">Переименовать или удалить категории</button></div>
-      <details class="more"><summary>Метка и комментарий</summary>
+      <label class="field" for="q-comment">Комментарий${g.items.length > 1 ? ' (ко всем операциям группы)' : ''}<input id="q-comment" maxlength="200" autocomplete="off" placeholder="Например, поездка на ПВЗ"></label>
+      ${S.tags.length ? `<details class="more"><summary>Метка</summary>
         <fieldset class="chips" aria-label="Метки">${chipsHtml('qtag', S.tags, [], 'checkbox')}</fieldset>
-        <label class="field" for="q-comment">Комментарий${g.items.length > 1 ? ' (ко всем операциям группы)' : ''}<input id="q-comment" maxlength="200" autocomplete="off"></label>
-      </details>
+      </details>` : ''}
       ${cash ? '' : !generic ? ruleBoxHtml('q', g.key, true) : `<p class="muted small">В описании нет получателя, поэтому правило не создаётся${g.items.length > 1 ? '. Если операции разные, нажмите «Разобрать по одной»' : ''}.</p>`}
       <p class="err" id="q-err" hidden></p>
       <button class="primary" type="button" data-act="done">Готово</button>
@@ -792,6 +904,7 @@ function renderQueue() {
     </article>`;
   bind(screen, {
     skip: () => { S.queue.skipped = S.queue.skipped.filter(x => x !== g.id); S.queue.skipped.push(g.id); renderQueue(); },
+    day: () => openDayMoves(g.items.map(t => t.date), g.items.map(t => t.id)),
     split: () => { S.queue.split.add(g.base); renderQueue(); },
     open: () => editTx(t0),
     newcat: () => showNewCat('q'),
@@ -924,7 +1037,7 @@ function renderReport() {
       <p class="muted small">Начислено — выплаты по графику со сроком в этом периоде, получено — операции в категории «Зарплата». Долг — на конец периода, вместе с долгами прошлых месяцев.</p>
     </section>` : ''}
     <div class="btn-row">
-      <button class="primary" type="button" data-act="xlsx" ${rep.rows.length ? '' : 'disabled'}>Выгрузить в Excel</button>
+      <button class="primary" type="button" data-act="xlsx" ${rep.allRows.length ? '' : 'disabled'}>Выгрузить в Excel</button>
       <button class="secondary" type="button" data-act="png" ${rep.cats.length ? '' : 'disabled'}>График картинкой</button>
     </div>
     <p class="muted small">${rep.transfers ? `Переводы между своими счетами (${rep.transfers}) не входят ни в расходы, ни в доходы. ` : ''}${rep.ignored.length ? `Не учитываются по вашей отметке: ${rep.ignored.length} ${plural(rep.ignored.length, 'операция', 'операции', 'операций')}. <button class="link inline" type="button" data-act="ignored">Показать</button>` : ''}</p>`;

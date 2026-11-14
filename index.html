@@ -160,7 +160,7 @@ b, strong { font-weight: 600; }
 .filter-row { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
 .filter-row > * { flex: 1 1 140px; min-width: 0; }
 /* Поля ввода — одна линия снизу. */
-input[type="search"], select, .field input, .add-row input, .edit-list input, .rule-add input {
+input[type="search"], select, .field input, .add-row input, .edit-list input, .rule-add input, .part .p-note {
   font-size: 17px; background: transparent; border: 0; border-bottom: 1.4px solid var(--ink); border-radius: 0; padding: 10px 0; width: 100%; min-height: 46px; color: var(--ink);
 }
 input[type="search"] { -webkit-appearance: none; appearance: none; }
@@ -231,6 +231,17 @@ button.bar-row { cursor: pointer; padding-block: 2px; }
 .steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 10px; }
 
 .q-card { gap: 16px; }
+.q-meta-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.qbtn { flex: none; width: 32px; height: 32px; border-radius: 50%; border: 1.4px solid var(--ink); background: none; font-size: 16px; line-height: 1; cursor: pointer; color: var(--ink); }
+.tx.mark { box-shadow: inset 3px 0 0 var(--deco); padding-left: 12px; }
+.tx.mark .tx-title { font-weight: 600; }
+.parts { display: flex; flex-direction: column; gap: 14px; }
+.part { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--hair); padding-top: 12px; }
+.part-top { display: flex; align-items: flex-end; gap: 12px; }
+.part-top .amount { flex: 1; }
+.amount.small input { font-size: 30px; }
+.amount.small span { font-size: 22px; }
+.amount input[readonly] { color: var(--muted); }
 .q-title { font-size: 28px; line-height: 1.05; letter-spacing: -.02em; overflow-wrap: anywhere; }
 .q-meta { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
 .q-meta b { color: var(--ink); font-weight: 500; font-size: 17px; }
@@ -306,8 +317,9 @@ dialog.sheet::backdrop { background: var(--backdrop); }
 .sheet-form { display: flex; flex-direction: column; gap: 18px; }
 .sheet-form p { margin: 0; }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; position: sticky; top: -14px; background: var(--bg); padding-block: 4px; z-index: 1; }
+.sheet-head .ghost { white-space: nowrap; }
 .sheet-head h3 { margin: 0; font-size: 28px; line-height: 1.05; letter-spacing: -.02em; }
-.sheet-head .ghost::after { content: " ×"; }
+.sheet-head .ghost[data-act="close"]::after, .sheet-head .ghost[data-act="cancel"]::after { content: " ×"; }
 .file { overflow-wrap: anywhere; }
 
 /* Нижняя панель — только слова; выбранный раздел чёрный, с чертой сверху. */
