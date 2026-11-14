@@ -12,7 +12,7 @@
 <meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta name="format-detection" content="telephone=no">
-<script>try { var t = localStorage.getItem('koshelek-theme'); if (t === 'light' || t === 'dark') { document.documentElement.dataset.theme = t; } } catch (e) {}</script>
+<script>try { var t = localStorage.getItem('koshelek-theme'); if (t === 'light' || t === 'dark' || t === 'color') { document.documentElement.dataset.theme = t; } } catch (e) {}</script>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
@@ -34,23 +34,36 @@
   --soft: #F2F2F2;
   --danger: #C8102E;
   --backdrop: rgba(0, 0, 0, .35);
+  --accent: #000000;
+  --accent-ink: #FFFFFF;
+  --deco: #000000;
   --arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 16'%3E%3Cpath d='M1 1l8 7-8 7' fill='none' stroke='black' stroke-width='1.4'/%3E%3C/svg%3E");
   --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 10'%3E%3Cpath d='M1 1l7 7 7-7' fill='none' stroke='black' stroke-width='1.4'/%3E%3C/svg%3E");
   --chev-w: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 10'%3E%3Cpath d='M1 1l7 7 7-7' fill='none' stroke='white' stroke-width='1.4'/%3E%3C/svg%3E");
   --font: "Manrope", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
   color-scheme: light;
 }
+/* Тема «как в телефоне» — без data-theme; светлая/тёмная/цветная задаются в «Ещё → Оформление». */
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+  :root:not([data-theme]) {
     --bg: #000000; --surface: #000000; --ink: #FFFFFF; --muted: #9C9C9C; --dim: #6E6E6E; --line: #FFFFFF;
     --hair: #2C2C2C; --track: #262626; --soft: #141414; --danger: #FF5A6E; --backdrop: rgba(0, 0, 0, .6);
+    --accent: #FFFFFF; --accent-ink: #000000; --deco: #FFFFFF;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --bg: #000000; --surface: #000000; --ink: #FFFFFF; --muted: #9C9C9C; --dim: #6E6E6E; --line: #FFFFFF;
   --hair: #2C2C2C; --track: #262626; --soft: #141414; --danger: #FF5A6E; --backdrop: rgba(0, 0, 0, .6);
+  --accent: #FFFFFF; --accent-ink: #000000; --deco: #FFFFFF;
   color-scheme: dark;
+}
+/* Цветная: серо-зелёный фон, почти чёрный текст, персиковые акценты. */
+:root[data-theme="color"] {
+  --bg: #949E9D; --surface: #949E9D; --ink: #1E2122; --muted: #2F3534; --dim: #5C6665; --line: #1E2122;
+  --hair: #7D8786; --track: #838D8C; --soft: #A3ACAB; --danger: #6E0B0B; --backdrop: rgba(30, 33, 34, .45);
+  --accent: #FFA771; --accent-ink: #1E2122; --deco: #FFA771;
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -72,7 +85,7 @@ b, strong { font-weight: 600; }
 /* Заголовок экрана: «Отчёт ————→ (что-то справа)». */
 .scr-head { display: flex; align-items: center; gap: 12px; min-height: 48px; }
 .scr-head h1 { margin: 0; flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; font-size: 36px; line-height: 1; letter-spacing: -.02em; }
-.scr-head h1::after { content: ""; flex: 1; min-width: 28px; height: 16px; background: var(--ink);
+.scr-head h1::after { content: ""; flex: 1; min-width: 28px; height: 16px; background: var(--deco);
   -webkit-mask: linear-gradient(#000, #000) left center / calc(100% - 1px) 1.4px no-repeat, var(--arrow) right center / 10px 16px no-repeat;
   mask: linear-gradient(#000, #000) left center / calc(100% - 1px) 1.4px no-repeat, var(--arrow) right center / 10px 16px no-repeat; }
 .scr-head h1.brand { font-size: 40px; }
@@ -80,7 +93,7 @@ b, strong { font-weight: 600; }
 .head-sub { font-size: 22px; letter-spacing: -.01em; }
 
 /* Бегущая строка, как наверху сайта ГЭС-2. */
-.ticker { margin: calc(-10px - env(safe-area-inset-top, 0px)) -16px -6px; padding-top: env(safe-area-inset-top, 0px); background: var(--ink); color: var(--bg); overflow: hidden; white-space: nowrap; font-size: 14px; }
+.ticker { margin: calc(-10px - env(safe-area-inset-top, 0px)) -16px -6px; padding-top: env(safe-area-inset-top, 0px); background: var(--accent); color: var(--accent-ink); overflow: hidden; white-space: nowrap; font-size: 14px; }
 .ticker-in { display: inline-flex; padding: 7px 0; }
 .ticker-in span { padding-right: 28px; }
 @media (prefers-reduced-motion: no-preference) { .ticker-in { animation: ticker var(--dur, 30s) linear infinite; } }
@@ -103,7 +116,7 @@ b, strong { font-weight: 600; }
 .note p { margin: 0; }
 .hint { margin: 0; background: var(--soft); color: var(--ink); padding: 10px 12px; font-size: 14px; }
 .hint.ok { background: var(--soft); border-left: 3px solid var(--ink); }
-.hint.bad { background: var(--ink); color: var(--bg); }
+.hint.bad { background: var(--accent); color: var(--accent-ink); }
 .rule-box { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--hair); padding-top: 12px; }
 .rule-box p { margin: 0; }
 .empty { border-top: 1.4px solid var(--line); padding: 16px 0; color: var(--muted); }
@@ -112,7 +125,7 @@ b, strong { font-weight: 600; }
 .big-empty { padding-block: 22px; }
 
 /* Сообщение-плашка: чёрная полоса со стрелкой; спокойная — в рамке. */
-.alert { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; text-align: left; background: var(--ink); color: var(--bg); border: 1.4px solid var(--ink); border-radius: 0; padding: 14px 16px; font-size: 15px; cursor: pointer; }
+.alert { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; text-align: left; background: var(--accent); color: var(--accent-ink); border: 1.4px solid var(--ink); border-radius: 0; padding: 14px 16px; font-size: 15px; cursor: pointer; }
 .alert b { font-weight: 600; }
 .alert .muted { color: inherit; opacity: .75; }
 .alert.soft { background: none; color: var(--ink); }
@@ -123,7 +136,7 @@ b, strong { font-weight: 600; }
 .btn-row.center { justify-content: center; }
 .btn-row > .primary, .btn-row > .secondary { flex: 1 1 160px; }
 .primary, .secondary, .danger { border-radius: 0; padding: 15px 16px; font-size: 17px; font-weight: 400; cursor: pointer; }
-.primary { background: var(--ink); color: var(--bg); border: 1.4px solid var(--ink); }
+.primary { background: var(--accent); color: var(--accent-ink); border: 1.4px solid var(--ink); }
 .secondary { background: transparent; color: var(--ink); border: 1.4px solid var(--ink); }
 .danger { background: var(--danger); color: #fff; border: 1.4px solid var(--danger); }
 .primary.small, .secondary.small, .danger.small { padding: 9px 14px; font-size: 15px; flex: 0 0 auto; }
@@ -153,7 +166,7 @@ input[type="search"], select, .field input, .add-row input, .edit-list input, .r
 input[type="search"] { -webkit-appearance: none; appearance: none; }
 input::placeholder { color: var(--dim); }
 select { -webkit-appearance: none; appearance: none; padding-right: 26px; background-image: var(--chev); background-repeat: no-repeat; background-size: 13px 8px; background-position: right 2px center; }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) select { background-image: var(--chev-w); } }
+@media (prefers-color-scheme: dark) { :root:not([data-theme]) select { background-image: var(--chev-w); } }
 :root[data-theme="dark"] select { background-image: var(--chev-w); }
 select option { color: #000; background: #fff; }
 .field { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--muted); min-width: 0; }
@@ -184,7 +197,7 @@ select option { color: #000; background: #fff; }
 .amt { font-variant-numeric: tabular-nums; font-size: 16px; font-weight: 500; white-space: nowrap; }
 .amt.transfer { color: var(--muted); font-weight: 400; }
 .pill { display: inline-block; font-size: 11px; line-height: 1.5; color: var(--muted); border: 1px solid currentColor; padding: 0 5px; vertical-align: 1px; }
-.pill.warn { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.pill.warn { background: var(--accent); color: var(--accent-ink); border-color: var(--ink); }
 .pill.ok { color: var(--ink); }
 
 .bars { display: flex; flex-direction: column; gap: 12px; }
@@ -229,7 +242,7 @@ button.bar-row { cursor: pointer; padding-block: 2px; }
 details.more { border-top: 1px solid var(--hair); padding-top: 10px; display: flex; flex-direction: column; gap: 10px; }
 details.more > summary { cursor: pointer; font-size: 15px; list-style: none; }
 details.more > summary::-webkit-details-marker { display: none; }
-details.more > summary::after { content: " [+]"; }
+details.more > summary::after { content: " [+]"; color: var(--deco); }
 details.more[open] > summary::after { content: " [−]"; }
 details.more[open] > *:not(summary) { margin-top: 10px; }
 
@@ -250,7 +263,7 @@ details.more[open] > *:not(summary) { margin-top: 10px; }
 .seg { display: grid; grid-template-columns: 1fr 1fr; padding: 0; border: 1.4px solid var(--ink); margin: 0; }
 .seg input { position: absolute; opacity: 0; pointer-events: none; }
 .seg label { text-align: center; padding: 11px 6px; cursor: pointer; font-size: 16px; }
-.seg input:checked + label { background: var(--ink); color: var(--bg); }
+.seg input:checked + label { background: var(--accent); color: var(--accent-ink); }
 .seg input:focus-visible + label { outline: 2px solid var(--ink); outline-offset: -4px; }
 .amount { display: flex; align-items: baseline; gap: 8px; border-bottom: 1.4px solid var(--ink); padding-bottom: 4px; }
 .amount input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--ink); font-weight: 400; font-size: 46px; letter-spacing: -.03em; padding: 0; outline: none; font-variant-numeric: tabular-nums; }
@@ -264,7 +277,7 @@ details.more[open] > *:not(summary) { margin-top: 10px; }
 /* Разделы на «Ещё»: «Категории [+]». */
 details.fold > summary { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; cursor: pointer; list-style: none; }
 details.fold > summary::-webkit-details-marker { display: none; }
-details.fold > summary h2::after { content: " [+]"; font-size: 20px; }
+details.fold > summary h2::after { content: " [+]"; font-size: 20px; color: var(--deco); }
 details.fold[open] > summary h2::after { content: " [−]"; }
 details.fold[open] { gap: 14px; }
 .edit-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
@@ -295,7 +308,7 @@ dialog.sheet::backdrop { background: var(--backdrop); }
 #tabbar button { position: relative; background: none; border: 0; padding: 15px 2px 14px; font-size: 14px; color: var(--muted); cursor: pointer; white-space: nowrap; }
 #tabbar button[aria-current="page"] { color: var(--ink); box-shadow: inset 0 3px 0 var(--ink); }
 #tabbar svg { display: none; }
-.badge { position: absolute; top: 3px; right: 2px; min-width: 17px; height: 17px; padding: 0 4px; background: var(--ink); color: var(--bg); font-size: 11px; line-height: 17px; text-align: center; }
+.badge { position: absolute; top: 3px; right: 2px; min-width: 17px; height: 17px; padding: 0 4px; background: var(--accent); color: var(--accent-ink); font-size: 11px; line-height: 17px; text-align: center; }
 
 #toast { position: fixed; left: 0; right: 0; bottom: calc(52px + env(safe-area-inset-bottom, 0px)); z-index: 40; background: var(--ink); color: var(--bg); padding: 12px 16px; font-size: 15px; text-align: center; }
 #busy { position: fixed; inset: 0; z-index: 50; background: var(--backdrop); display: grid; place-items: center; padding: 16px; }
@@ -303,7 +316,7 @@ dialog.sheet::backdrop { background: var(--backdrop); }
 .spin { width: 18px; height: 18px; border-radius: 50%; border: 1.4px solid var(--hair); border-top-color: var(--ink); flex: none; }
 @media (prefers-reduced-motion: no-preference) { .spin { animation: spin .8s linear infinite; } .fill, .col-bar span { transition: width .25s ease, height .25s ease; } }
 @keyframes spin { to { transform: rotate(360deg); } }
-#update { position: fixed; top: 0; left: 0; right: 0; z-index: 30; background: var(--ink); color: var(--bg); border: 0; padding: calc(env(safe-area-inset-top, 0px) + 10px) 16px 10px; font-size: 15px; cursor: pointer; }
+#update { position: fixed; top: 0; left: 0; right: 0; z-index: 30; background: var(--accent); color: var(--accent-ink); border: 0; padding: calc(env(safe-area-inset-top, 0px) + 10px) 16px 10px; font-size: 15px; cursor: pointer; }
 </style>
 </head>
 <body>

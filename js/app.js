@@ -11,7 +11,7 @@ import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
 import { buildReport, exportXlsx, chartPng, isWorkTx, isReimbTx, workBalance, catLabel } from './report.js';
 import { salaryCfg, salaryState, salaryPeriod, payoutList, rateOn, scheduleText, dm } from './salary.js';
 
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.8.0';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -100,12 +100,12 @@ const saveCats = () => { reindex(); return db.setMeta('categories', S.cats); };
 const saveTags = () => { reindex(); return db.setMeta('tags', S.tags); };
 const saveSettings = () => db.setMeta('settings', S.settings);
 
-/** Тема: 'light' — чёрный текст на белом, 'dark' — наоборот, иначе — как в телефоне.
+/** Тема: 'light' — чёрный текст на белом, 'dark' — наоборот, 'color' — серо-зелёный фон с персиковыми акцентами, иначе — как в телефоне.
  *  Копия в localStorage нужна, чтобы тема включалась сразу при запуске, до чтения базы. */
-const THEME_BG = { light: '#FFFFFF', dark: '#000000' };
+const THEME_BG = { light: '#FFFFFF', dark: '#000000', color: '#949E9D' };
 function applyTheme(t) {
   const root = document.documentElement;
-  if (t === 'light' || t === 'dark') root.dataset.theme = t; else delete root.dataset.theme;
+  if (THEME_BG[t]) root.dataset.theme = t; else delete root.dataset.theme;
   for (const m of document.querySelectorAll('meta[name="theme-color"]')) {
     const own = (m.media || '').includes('dark') ? THEME_BG.dark : THEME_BG.light;
     m.content = THEME_BG[t] || own;
@@ -1055,8 +1055,8 @@ function renderMore() {
 
     <section class="card">
       <h2>Оформление</h2>
-      <fieldset class="chips" aria-label="Тема">${[['auto', 'Как в телефоне'], ['light', 'Светлая'], ['dark', 'Тёмная']].map(([v, n]) => `<label class="chip"><input type="radio" name="theme" value="${v}" ${(S.settings.theme || 'auto') === v ? 'checked' : ''} data-change="theme"><span>${n}</span></label>`).join('')}</fieldset>
-      <p class="muted small">Светлая — чёрный текст на белом фоне, тёмная — белый текст на чёрном. «Как в телефоне» переключается вместе с темой iPhone.</p>
+      <fieldset class="chips" aria-label="Тема">${[['auto', 'Как в телефоне'], ['light', 'Светлая'], ['dark', 'Тёмная'], ['color', 'Цветная']].map(([v, n]) => `<label class="chip"><input type="radio" name="theme" value="${v}" ${(S.settings.theme || 'auto') === v ? 'checked' : ''} data-change="theme"><span>${n}</span></label>`).join('')}</fieldset>
+      <p class="muted small">Светлая — чёрный текст на белом фоне, тёмная — белый текст на чёрном, цветная — серо-зелёный фон с персиковыми акцентами. «Как в телефоне» переключается вместе с темой iPhone.</p>
     </section>
 
     <section class="card">
@@ -1202,7 +1202,7 @@ function renderMore() {
     theme: async (el) => {
       S.settings.theme = el.value === 'auto' ? undefined : el.value;
       applyTheme(S.settings.theme); await saveSettings();
-      toast(el.value === 'light' ? 'Включена светлая тема' : el.value === 'dark' ? 'Включена тёмная тема' : 'Тема — как в телефоне');
+      toast({ light: 'Включена светлая тема', dark: 'Включена тёмная тема', color: 'Включена цветная тема' }[el.value] || 'Тема — как в телефоне');
     },
     'imp-del': (el) => {
       const i = S.imports.find(x => x.id === el.dataset.id); if (!i) return;
