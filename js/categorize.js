@@ -112,8 +112,32 @@ export function isCashWithdrawal(tx) {
   return ['6010', '6011'].includes(String(tx.mcc || ''));
 }
 
+/** Маркетплейсы: покупки и возвраты. Покупку человек разбирает сам (что купили), возврат гасит покупку. */
+const MARKET_BRANDS = [
+  ['ozon', /ПЛАТФОРМЕ OZON|OZON\.RU|WWW\.OZON/],
+  ['wb', /WILDBERRIES|WB\*/],
+  ['lamoda', /LAMODA/],
+  ['ymarket', /YANDEX\*\d+\*MARKET|MARKET\.YANDEX|ЯНДЕКС\.?\s?МАРКЕТ/],
+  ['ali', /ALIEXPRESS/],
+  ['mega', /MEGAMARKET|МЕГАМАРКЕТ/],
+  ['avito', /AVITO|АВИТО/],
+];
+export function marketBrand(tx) {
+  if (!tx) return null;
+  const text = ((tx.desc || '') + ' ' + (tx.raw || '')).toUpperCase().replace(/Ё/g, 'Е');
+  if (/ПЕРЕВОД (ПО НОМЕРУ|ЧЕРЕЗ СБП|МЕЖДУ)|ИСХОДЯЩИЙ ПЕРЕВОД|ВХОДЯЩИЙ ПЕРЕВОД/.test(text)) return null;
+  for (const [b, re] of MARKET_BRANDS) if (re.test(text)) return b;
+  return String(tx.mcc || '') === '5399' ? 'mcc5399' : null;
+}
+export const isMarketplaceTx = (tx) => !!marketBrand(tx);
+/** Номер заказа из описания (у Ozon он есть и в оплате, и в возврате). */
+export function orderNo(tx) {
+  const m = ((tx.raw || '') + ' ' + (tx.desc || '')).match(/заказ\s*№\s*([\d-]+)/i);
+  return m ? m[1] : null;
+}
+
 export function autoCategory(tx, sortedRules, catMap, ctx = {}) {
-  if (isCashWithdrawal(tx)) return null;
+  if (isCashWithdrawal(tx) || isMarketplaceTx(tx)) return null;
   for (const r of sortedRules) {
     if (!ruleMatches(r, tx)) continue;
     if (r.ignore) return { ignore: true, by: 'rule', ruleId: r.id };

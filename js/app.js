@@ -6,12 +6,12 @@ import {
   esc, hash, uid, normText, prettyDesc, parseMoney, saveFile, monthShort, ymd,
 } from './util.js';
 import { DEFAULT_CATEGORIES, DEFAULT_TAGS, BANKS } from './catalog.js';
-import { isCashWithdrawal, merchantKey, isGenericKey, autoCategory, sortRules, makeRule, ruleMatches, dirOf, categoryFits, ruleScopes, suggestScope, findCounterpart } from './categorize.js';
+import { isCashWithdrawal, isMarketplaceTx, marketBrand, orderNo, merchantKey, isGenericKey, autoCategory, sortRules, makeRule, ruleMatches, dirOf, categoryFits, ruleScopes, suggestScope, findCounterpart } from './categorize.js';
 import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
 import { buildReport, exportXlsx, chartPng, isWorkTx, isReimbTx, workBalance, catLabel } from './report.js';
 import { salaryCfg, salaryState, salaryPeriod, payoutList, rateOn, scheduleText, dm } from './salary.js';
 
-const APP_VERSION = '1.10.3';
+const APP_VERSION = '1.11.0';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -99,11 +99,58 @@ async function load() {
   S.rules = rules;
   S.imports = imports.sort((a, b) => b.at.localeCompare(a.at));
   reindex();
+  const refundLinks = linkRefunds();
+  if (refundLinks.length) await db.putMany('tx', refundLinks);
   await db.setMeta('categories', S.cats);
   await db.setMeta('settings', S.settings);
   if (!m.tags) await db.setMeta('tags', S.tags);
 }
-const saveTxs = (list) => db.putMany('tx', list);
+/** Сохранить операции; частичные возвраты маркетплейсов получают категорию своей покупки. */
+const saveTxs = (list) => db.putMany('tx', withRefunds(list));
+function withRefunds(list) {
+  const out = [...list];
+  for (const p of list) {
+    if (!(p.amount < 0) || !p.category) continue;
+    for (const r of S.txs) {
+      if (r.refundOf === p.id && !r.ignored && r.category !== p.category) { r.category = p.category; r.catBy = 'refund'; out.push(r); }
+    }
+  }
+  return out;
+}
+
+/** Возвраты маркетплейсов гасят покупки.
+ *  Полный возврат (та же сумма, тот же банк и магазин, у Ozon — тот же заказ): покупка и возврат отмечаются
+ *  «не учитывать» и больше нигде не мешают. Частичный возврат по заказу Ozon получает категорию покупки. */
+function linkRefunds() {
+  const changed = [];
+  const used = new Set(S.txs.filter(t => t.refundedBy).map(t => t.id));
+  const days = (a, b) => Math.round((new Date(b + 'T12:00:00') - new Date(a + 'T12:00:00')) / 86400000);
+  const refunds = S.txs.filter(t => t.amount > 0 && !t.refundOf && isMarketplaceTx(t))
+    .sort((a, b) => a.date.localeCompare(b.date) || (a.time || '').localeCompare(b.time || ''));
+  for (const r of refunds) {
+    if (r.ignored && r.catBy === 'manual') continue;
+    const brand = marketBrand(r), ord = orderNo(r);
+    const cands = S.txs.filter(p => p.amount < 0 && !p.ignored && !used.has(p.id) && p.bank === r.bank && (p.account || '') === (r.account || '')
+      && marketBrand(p) === brand && p.date <= r.date && days(p.date, r.date) <= 120 && (!ord || orderNo(p) === ord))
+      .sort((a, b) => b.date.localeCompare(a.date) || (b.time || '').localeCompare(a.time || ''));
+    const full = cands.find(p => p.amount === -r.amount);
+    if (full) {
+      used.add(full.id);
+      full.ignored = true; full.refundedBy = r.id;
+      full.comment = full.comment ? `${full.comment} · вернули ${dateDots(r.date)}` : `Вернули ${dateDots(r.date)}`;
+      r.ignored = true; r.refundOf = full.id;
+      r.comment = `Возврат за покупку ${dateDots(full.date)}${r.comment && !/^Возврат за покупку$/.test(r.comment) ? ' · ' + r.comment : ''}`;
+      changed.push(full, r);
+    } else if (ord && cands.length && !r.category) {
+      const p = cands[0];
+      r.refundOf = p.id;
+      if (p.category) { r.category = p.category; r.catBy = 'refund'; }
+      r.comment = r.comment || `Частичный возврат по заказу от ${dateDots(p.date)}`;
+      changed.push(r);
+    }
+  }
+  return changed;
+}
 const saveCats = () => { reindex(); return db.setMeta('categories', S.cats); };
 const saveTags = () => { reindex(); return db.setMeta('tags', S.tags); };
 const saveSettings = () => db.setMeta('settings', S.settings);
@@ -137,7 +184,7 @@ const isReimb = (t) => isReimbTx(t, S.catMap);
 /** «Рабочая · Транспорт» для подкатегории. */
 const catName = (id) => catLabel(id, S.catMap);
 /** Ждёт ответа во вкладке «Разобрать»: нет категории и не отмечена «не учитывать». */
-const needsAnswer = (t) => !t.category && !t.ignored;
+const needsAnswer = (t) => !t.category && !t.ignored && !(t.refundOf && S.byId.get(t.refundOf) && !S.byId.get(t.refundOf).category);
 /** Входит в расходы и доходы: не «не учитывать» и не перевод между своими счетами. */
 const counted = (t) => !t.ignored && !(S.catMap.get(t.category) && S.catMap.get(t.category).type === 'transfer');
 // Отметки «ждёт/возмещено» у отдельных операций больше не нужны: возмещение считается балансом.
@@ -149,7 +196,7 @@ function applyRule(rule, exceptId, includeManual = false) {
   const changed = [];
   for (const t of S.txs) {
     if (t.id === exceptId || (!includeManual && t.catBy === 'manual')) continue;
-    if (!ruleMatches(rule, t) || isCashWithdrawal(t)) continue;
+    if (!ruleMatches(rule, t) || isCashWithdrawal(t) || isMarketplaceTx(t)) continue;
     if (rule.ignore) { t.ignored = true; t.ruleId = rule.id; }
     else {
       if (!categoryFits(S.catMap.get(rule.category), t)) continue;
@@ -270,7 +317,7 @@ function txRow(t) {
   return `<button class="tx" type="button" data-act="edit" data-id="${esc(t.id)}">
     <span class="tx-main">
       <span class="tx-title">${esc(prettyDesc(t.desc))}</span>
-      <span class="tx-sub">${t.time ? `<span class="tx-time">${esc(t.time)}</span> · ` : ''}${c ? esc(catName(c.id)) : t.ignored ? '' : '<span class="pill warn">без категории</span>'}${t.ignored ? `${c ? ' ' : ''}<span class="pill">не учитывается</span>` : ''}${tags.map(g => ` <span class="pill">${esc(g.name)}</span>`).join('')}${t.bank ? ` · ${esc(t.bank)}` : ''}</span>
+      <span class="tx-sub">${t.time ? `<span class="tx-time">${esc(t.time)}</span> · ` : ''}${c ? esc(catName(c.id)) : t.ignored ? '' : '<span class="pill warn">без категории</span>'}${t.ignored ? `${c ? ' ' : ''}<span class="pill">${t.refundOf || t.refundedBy ? 'возврат погашен' : 'не учитывается'}</span>` : ''}${tags.map(g => ` <span class="pill">${esc(g.name)}</span>`).join('')}${t.bank ? ` · ${esc(t.bank)}` : ''}</span>
       ${t.comment ? `<span class="tx-note">${esc(t.comment)}</span>` : ''}
     </span>
     <span class="${amountCls(t)}${!counted(t) ? ' transfer' : ''}">${money(t.amount)}</span>
@@ -572,7 +619,7 @@ function editTx(t) {
   const dir = t ? dirOf(t) : 'out';
   const tagsSel = t ? [...(t.tags || [])] : [];
   const sameKey = t ? S.txs.filter(o => o.id !== t.id && o.key === t.key && dirOf(o) === dir).length : 0;
-  const canRule = t && !isGenericKey(t.key) && !isCashWithdrawal(t);
+  const canRule = t && !isGenericKey(t.key) && !isCashWithdrawal(t) && !isMarketplaceTx(t);
   const html = `<form data-submit="save" class="sheet-form" novalidate>
     <div class="sheet-head"><h3>${isNew ? 'Новая операция' : 'Операция'}</h3><button class="ghost" type="button" data-act="close">Закрыть</button></div>
     ${isNew ? `
@@ -846,7 +893,7 @@ function queueGroups() {
   for (const t of S.txs) {
     if (!needsAnswer(t)) continue;
     const gkBase = (isGenericKey(t.key) ? 'g:' + normText(prettyDesc(t.desc)).replace(/[\d*•№]+/g, '').replace(/\s+/g, ' ') : t.key) + '|' + dirOf(t);
-    const gk = (S.queue.split.has(gkBase) || isCashWithdrawal(t) || (isGenericKey(t.key) && counterpartOf(t, { loose: true }))) ? 'tx:' + t.id : gkBase;
+    const gk = (S.queue.split.has(gkBase) || isCashWithdrawal(t) || isMarketplaceTx(t) || (isGenericKey(t.key) && counterpartOf(t, { loose: true }))) ? 'tx:' + t.id : gkBase;
     if (!groups.has(gk)) groups.set(gk, { id: gk, base: gkBase, key: t.key, dir: dirOf(t), items: [] });
     groups.get(gk).items.push(t);
   }
@@ -877,6 +924,7 @@ function renderQueue() {
   const preselect = hintCat ? 'own' : null;
   const generic = isGenericKey(g.key);
   const cash = g.items.every(isCashWithdrawal);
+  const mkt = g.items.every(isMarketplaceTx);
   screen.innerHTML = `<header class="scr-head"><h1>Разобрать</h1><span class="muted">осталось ${total}</span></header>
     <article class="card q-card">
       <div class="q-title">${esc(prettyDesc(t0.desc))}</div>
@@ -884,7 +932,7 @@ function renderQueue() {
       ${t0.bankCategory ? `<div class="muted small">Банк пишет: «${esc(t0.bankCategory)}»</div>` : ''}
       ${hintCat ? `<div class="hint">Похоже на перевод между своими счетами: есть встречная операция ${money(hintCat.amount)} в ${esc(hintCat.bank)} ${dateDots(hintCat.date)}${hintCat.time ? ' в ' + esc(hintCat.time) : ''}. Если выбрать «Между своими счетами», она отметится тоже.</div>` : ''}
       ${g.items.length > 1 ? `<ul class="q-ex">${g.items.slice(0, 4).map(t => `<li><span>${dateDots(t.date)}${t.time ? ' ' + esc(t.time) : ''}</span><span class="${amountCls(t)}">${money(t.amount)}</span></li>`).join('')}${g.items.length > 4 ? `<li class="muted">и ещё ${g.items.length - 4}</li>` : ''}</ul>` : ''}
-      <div class="group"><div class="group-h">${cash ? 'Сняли наличные — на что их потратили?' : g.dir === 'out' ? 'Что это за трата?' : 'Что это за поступление?'}</div>
+      <div class="group"><div class="group-h">${cash ? 'Сняли наличные — на что их потратили?' : mkt && g.dir === 'out' ? 'Покупка на маркетплейсе — что купили?' : mkt ? 'Возврат с маркетплейса — за что вернули?' : g.dir === 'out' ? 'Что это за трата?' : 'Что это за поступление?'}</div>
         <fieldset class="chips" aria-label="Категория">${catChipsHtml('qcat', g.dir, preselect)}<button class="chip-add" type="button" data-act="newcat">+ категория</button></fieldset>
         ${newCatRowHtml('q')}
         <button class="link left" type="button" data-act="cats">Переименовать или удалить категории</button></div>
@@ -892,7 +940,7 @@ function renderQueue() {
       ${S.tags.length ? `<details class="more"><summary>Метка</summary>
         <fieldset class="chips" aria-label="Метки">${chipsHtml('qtag', S.tags, [], 'checkbox')}</fieldset>
       </details>` : ''}
-      ${cash ? '' : !generic ? ruleBoxHtml('q', g.key, true) : `<p class="muted small">В описании нет получателя, поэтому правило не создаётся${g.items.length > 1 ? '. Если операции разные, нажмите «Разобрать по одной»' : ''}.</p>`}
+      ${cash || mkt ? '' : !generic ? ruleBoxHtml('q', g.key, true) : `<p class="muted small">В описании нет получателя, поэтому правило не создаётся${g.items.length > 1 ? '. Если операции разные, нажмите «Разобрать по одной»' : ''}.</p>`}
       <p class="err" id="q-err" hidden></p>
       <button class="primary" type="button" data-act="done">Готово</button>
       <button class="secondary" type="button" data-act="ignore">Не учитывать${g.items.length > 1 ? ` (все ${g.items.length})` : ''}</button>
@@ -1261,7 +1309,7 @@ function renderMore() {
       S.rules.push(rule); reindex(); await db.put('rules', rule);
       const ch = [];
       for (const t of S.txs) {
-        if (!needsAnswer(t) || !ruleMatches(rule, t) || isCashWithdrawal(t)) continue;
+        if (!needsAnswer(t) || !ruleMatches(rule, t) || isCashWithdrawal(t) || isMarketplaceTx(t)) continue;
         if (rule.ignore) { t.ignored = true; t.ruleId = rule.id; ch.push(t); }
         else if (categoryFits(S.catMap.get(rule.category), t)) { t.category = rule.category; t.catBy = 'rule'; t.ruleId = rule.id; ch.push(t); }
       }
@@ -1608,6 +1656,8 @@ function reviewImport(res) {
         S.txs.push(...txs); S.imports.unshift(imp); reindex();
         const more = autoRecheck();
         if (more.length) await saveTxs(more);
+        const links = linkRefunds();
+        if (links.length) await saveTxs(links);
         saved = true;
         closeSheet();
         const left = txs.filter(needsAnswer).length;
