@@ -11,7 +11,7 @@ import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
 import { buildReport, exportXlsx, chartPng, isWorkTx, isReimbTx, workBalance, catLabel } from './report.js';
 import { salaryCfg, salaryState, salaryPeriod, payoutList, rateOn, scheduleText, dm } from './salary.js';
 
-const APP_VERSION = '1.10.0';
+const APP_VERSION = '1.10.1';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -1021,11 +1021,11 @@ function renderReport() {
       <div class="card-h"><h2>Рабочие траты — баланс</h2><button class="link" type="button" data-act="work-ops">Операции</button></div>
       <div class="split three">
         <div><span class="eyebrow">Потрачено</span><span class="val">${rub(rep.work.spent)}</span></div>
-        <div><span class="eyebrow">Возмещено</span><span class="val pos">${rub(rep.work.back)}</span></div>
-        <div><span class="eyebrow">${rep.work.left >= 0 ? 'Осталось' : 'Переплата'}</span><span class="val">${rub(Math.abs(rep.work.left))}</span></div>
+        <div><span class="eyebrow">Получено</span><span class="val pos">${rub(rep.work.back)}</span></div>
+        <div><span class="eyebrow">${rep.work.close >= 0 ? 'Долг' : 'Переплата'} на ${dm(rep.to)}</span><span class="val">${rub(Math.abs(rep.work.close))}</span></div>
       </div>
       ${rep.work.subs.length ? `<div class="bars">${rep.work.subs.map(e => barRow(e, rep.work.spent, rep.work.subs[0].sum)).join('')}</div>` : ''}
-      <p class="muted small">За период выше. За всё время ${allWork.left > 0 ? `осталось вернуть <b>${rub(allWork.left)}</b>` : allWork.left < 0 ? `возмещено больше на <b>${rub(-allWork.left)}</b>` : 'всё возмещено'} (потрачено ${rub(allWork.spent)}, возмещено ${rub(allWork.back)}). ${r.includeWork ? 'Сейчас рабочие траты включены в расходы выше.' : 'В личные расходы и доходы рабочие траты и возмещения не входят.'}</p>
+      <p class="muted small">На начало периода компания ${rep.work.open > 0 ? `была должна ${rub(rep.work.open)}` : rep.work.open < 0 ? `переплатила ${rub(-rep.work.open)}` : 'ничего не была должна'}. За всё время ${allWork.left > 0 ? `осталось вернуть <b>${rub(allWork.left)}</b>` : allWork.left < 0 ? `возмещено больше на <b>${rub(-allWork.left)}</b>` : 'всё возмещено'} (потрачено ${rub(allWork.spent)}, возмещено ${rub(allWork.back)}). ${r.includeWork ? 'Сейчас рабочие траты включены в расходы выше.' : 'В личные расходы и доходы рабочие траты и возмещения не входят.'}</p>
     </section>` : ''}
     ${sp ? `<section class="card">
       <div class="card-h"><h2>Зарплата — долг</h2><button class="link" type="button" data-act="salary">Подробно</button></div>

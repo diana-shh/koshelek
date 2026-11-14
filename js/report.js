@@ -95,6 +95,9 @@ export function buildReport({ txs, catMap, tagMap, from, to, includeWork, bank }
   rows.sort(chrono);
   allRows.sort(chrono);
   const work = workBalance(txs.filter(t => t.date >= from && t.date <= to && (!bank || t.bank === bank)), catMap, tagMap);
+  // Долг компании по рабочим тратам на начало периода (всё, что было раньше): >0 — должна, <0 — переплатила.
+  work.open = workBalance(txs.filter(t => t.date < from && (!bank || t.bank === bank)), catMap, tagMap).left;
+  work.close = work.open + work.left;
   ignored.sort((a, b) => a.date.localeCompare(b.date));
   return { from, to, months, exp, inc, cats, inCats, byMonth, catMonth, work, rows, allRows, transfers, uncat, uncatSum, includeWork, bank, ignored };
 }
@@ -109,6 +112,18 @@ function setFormats(ws, XLSX, colFormats) {
       if (cell && cell.t === 'n') cell.z = z;
     }
   }
+}
+
+/** Строки баланса рабочих трат: долг на начало, движение за период, долг на конец. */
+function workRows(rep) {
+  const w = rep.work;
+  const debt = (label, v) => [v >= 0 ? `${label}: компания должна` : `${label}: компания переплатила`, Math.abs(v) / 100];
+  return [
+    debt(`На ${dateDots(rep.from)}`, w.open),
+    ['Потрачено на работу за период', w.spent / 100],
+    ['Получено от компании за период', w.back / 100],
+    debt(`На ${dateDots(rep.to)}`, w.close),
+  ];
 }
 
 export async function exportXlsx(rep, { catMap, tagMap }) {
@@ -128,8 +143,7 @@ export async function exportXlsx(rep, { catMap, tagMap }) {
   s1.push([], ['Разница (доходы − расходы)', (rep.inc - rep.exp) / 100]);
   if (rep.work.list.length) {
     s1.push([], ['Рабочие траты и деньги от компании — вне личного бюджета, подробно на листе «Рабочие траты»'],
-      ['Потрачено на работу за период', rep.work.spent / 100], ['Получено от компании за период', rep.work.back / 100],
-      [rep.work.left >= 0 ? 'Разница за период: компании вернуть' : 'Разница за период: компания переплатила', Math.abs(rep.work.left) / 100]);
+      ...workRows(rep));
   }
   const ws1 = XLSX.utils.aoa_to_sheet(s1);
   setFormats(ws1, XLSX, { 1: MONEY, 2: '0.0%' });
@@ -172,7 +186,7 @@ export async function exportXlsx(rep, { catMap, tagMap }) {
   const w = rep.work;
   if (w.list.length) {
     const s4 = [['Рабочие траты — баланс'], [period], [],
-      ['Потрачено', w.spent / 100], ['Получено от компании', w.back / 100], ['Осталось вернуть', w.left / 100], [],
+      ...workRows(rep), [],
       ['Подкатегория', 'Сумма, ₽', 'Операций']];
     for (const e of w.subs) s4.push([e.name, e.sum / 100, e.count]);
     s4.push([], ['Дата', 'Время', 'Что', 'Подкатегория', 'Комментарий', 'Сумма, ₽']);
