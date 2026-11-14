@@ -9,8 +9,9 @@ import { DEFAULT_CATEGORIES, DEFAULT_TAGS, BANKS } from './catalog.js';
 import { merchantKey, isGenericKey, autoCategory, sortRules, makeRule, ruleMatches, dirOf, categoryFits, ruleScopes, suggestScope, findCounterpart } from './categorize.js';
 import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
 import { buildReport, exportXlsx, chartPng, isWorkTx, isReimbTx, workBalance, catLabel } from './report.js';
+import { salaryCfg, salaryState, salaryPeriod, payoutList, rateOn, scheduleText, dm } from './salary.js';
 
-const APP_VERSION = '1.4.3';
+const APP_VERSION = '1.5.0';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -97,6 +98,17 @@ const saveTxs = (list) => db.putMany('tx', list);
 const saveCats = () => { reindex(); return db.setMeta('categories', S.cats); };
 const saveTags = () => { reindex(); return db.setMeta('tags', S.tags); };
 const saveSettings = () => db.setMeta('settings', S.settings);
+
+// ---------- зарплата ----------
+/** Последний день, за который есть данные: конец самой свежей выписки или последняя операция. */
+function dataUntil() {
+  let d = '';
+  for (const i of S.imports) if (i.to > d) d = i.to;
+  for (const t of S.txs) if (t.date > d) d = t.date;
+  return d && d < today() ? d : today();
+}
+const salCfg = () => salaryCfg(S.settings);
+const salaryOn = () => { const c = salCfg(); return c.on && c.start && c.rates.length; };
 
 const isWork = (t) => isWorkTx(t, S.tagMap, S.catMap);
 const isReimb = (t) => isReimbTx(t, S.catMap);
@@ -306,6 +318,7 @@ function renderHome() {
       </section>` : ''}
     ${wb.list.length ? `<button class="alert soft" type="button" data-act="work">
         <span><b>${wb.left > 0 ? `Рабочие траты: осталось вернуть ${rub(wb.left)}` : wb.left < 0 ? `Рабочие траты: возмещено больше на ${rub(-wb.left)}` : 'Рабочие траты возмещены полностью'}</b><span class="muted"> · потрачено ${rub(wb.spent)}, возмещено ${rub(wb.back)}</span></span><span aria-hidden="true">›</span></button>` : ''}
+    ${salaryOn() ? salaryAlertHtml() : ''}
     <div class="btn-row">
       <button class="primary" type="button" data-act="upload">Загрузить выписки</button>
       <button class="secondary" type="button" data-act="add">Добавить вручную</button>
@@ -324,6 +337,7 @@ const homeActions = {
   go: (el) => setTab(el.dataset.tab),
   work: () => { S.ops.tag = 'work'; S.ops.cat = 'all'; S.ops.q = ''; S.ops.range = null; setTab('ops'); },
   backup: () => doBackup(),
+  salary: () => openSalary(),
 };
 function plural(n, one, few, many) {
   const a = n % 10, b = n % 100;
@@ -337,6 +351,114 @@ function barRow(c, total, max, act) {
     <span class="bar-val">${rub(c.sum)}<small>${share < 1 ? '<1' : Math.round(share)}%</small></span>
     <span class="track"><span class="fill${c.id ? '' : ' none'}" style="width:${Math.max(1.5, c.sum / max * 100)}%"></span></span>`;
   return act ? `<button class="bar-row" type="button" data-act="${act}" data-cat="${esc(c.id)}">${inner}</button>` : `<div class="bar-row">${inner}</div>`;
+}
+
+// ---------- Зарплата: экран долга ----------
+const daysWord = (n) => `${n} ${plural(n, 'день', 'дня', 'дней')}`;
+function salaryAlertHtml() {
+  const st = salaryState(salCfg(), S.txs, dataUntil());
+  const head = st.debt > 0 ? `Зарплата: компания должна ${rub(st.debt)}` : st.debt < 0 ? `Зарплата: получено вперёд ${rub(-st.debt)}` : 'Зарплата выплачена полностью';
+  const o = st.oldestUnpaid;
+  const sub = o ? `задержка с ${dm(o.due)} — ${daysWord(o.overdue)}` : st.next ? `следующая выплата ${dm(st.next.due)}` : '';
+  return `<button class="alert soft" type="button" data-act="salary">
+    <span><b>${head}</b><span class="muted"> · на ${dm(st.asOf)}${sub ? ' · ' + sub : ''}</span></span><span aria-hidden="true">›</span></button>`;
+}
+function payoutStatus(it) {
+  if (it.opening) return it.status === 'paid' ? `<span class="pill ok">погашен ${dm(it.closedOn)}</span>` : `<span class="pill warn">не погашен</span>${it.paid ? ` пришло ${rub(it.paid)}` : ''}`;
+  if (it.status === 'paid') {
+    if (!it.amount) return '<span class="pill">без начисления</span>';
+    const when = it.delay ? `с задержкой ${daysWord(it.delay)}` : it.early ? 'заранее' : 'в срок';
+    return `<span class="pill ok">выплачена ${dm(it.closedOn)}</span> ${when}`;
+  }
+  const late = it.overdue > 0 ? `задержка ${daysWord(it.overdue)}` : 'срок сегодня';
+  if (it.status === 'partial') return `<span class="pill warn">не хватает ${rub(it.amount - it.paid)}</span> пришло ${rub(it.paid)} · ${late}`;
+  return `<span class="pill warn">не выплачена</span> ${late}`;
+}
+function openSalary() {
+  const cfg = salCfg();
+  const asOf = dataUntil();
+  const st = salaryState(cfg, S.txs, asOf);
+  const later = today() > asOf ? payoutList(cfg, today()).filter(p => p.due > asOf) : [];
+  const laterSum = later.reduce((s, p) => s + p.amount, 0);
+  const rows = [...st.items].reverse().map(it => it.opening
+    ? `<div class="tx static"><span class="tx-main"><span class="tx-title">Долг на начало учёта</span>
+        <span class="tx-sub">на ${esc(dateRu(cfg.start))}</span><span class="tx-sub">${payoutStatus(it)}</span></span><span class="amt">${rub(it.amount)}</span></div>`
+    : `<button class="tx" type="button" data-act="pay" data-due="${it.due}"><span class="tx-main">
+        <span class="tx-title">${esc(dateRu(it.due))}</span>
+        <span class="tx-sub">за ${dm(it.from)}–${dm(it.to)}${it.adjusted ? ' · сумма изменена' : ''}${it.note ? ' · ' + esc(it.note) : ''}</span>
+        <span class="tx-sub">${payoutStatus(it)}</span></span><span class="amt">${rub(it.amount)}</span></button>`).join('');
+  const recs = [...st.receipts].reverse().map(t => `<button class="tx" type="button" data-act="tx" data-id="${esc(t.id)}"><span class="tx-main">
+      <span class="tx-title">${esc(prettyDesc(t.desc))}</span>
+      <span class="tx-sub">${esc(dateRu(t.date))}${t.time ? ', ' + esc(t.time) : ''} · ${esc(t.bank || 'вручную')}${t.account ? ' ' + esc(t.account) : ''}</span>
+      ${t.comment ? `<span class="tx-note">${esc(t.comment)}</span>` : ''}</span><span class="amt pos">+${rub(t.amount)}</span></button>`).join('');
+  const n = st.next;
+  openSheet(`<div class="sheet-form">
+    <div class="sheet-head"><h3>Зарплата</h3><button class="ghost" type="button" data-act="close">Закрыть</button></div>
+    <div class="tx-head">
+      <span class="eyebrow">${st.debt > 0 ? 'Компания должна' : st.debt < 0 ? 'Получено вперёд' : 'Долга нет'}</span>
+      <div class="big">${rub(Math.abs(st.debt))}</div>
+      <div class="muted">на ${esc(dateRu(asOf))}${asOf === today() ? ', сегодня' : ' — по последней загруженной выписке'}</div>
+    </div>
+    ${later.length ? `<p class="hint">После ${dm(asOf)} по графику ещё ${later.length} ${plural(later.length, 'выплата', 'выплаты', 'выплат')} на ${rub(laterSum)} (${later.map(p => dm(p.due)).join(', ')}). Загрузите свежие выписки — станет видно, пришли ли деньги.</p>` : ''}
+    <div class="stat-grid">
+      <div><span class="eyebrow">Начислено</span><b>${rub(st.accrued)}</b></div>
+      <div><span class="eyebrow">Получено</span><b class="pos">${rub(st.received)}</b></div>
+      ${st.opening ? `<div><span class="eyebrow">${st.opening > 0 ? 'Долг на начало' : 'Переплата на начало'}</span><b>${rub(Math.abs(st.opening))}</b></div>` : ''}
+      <div><span class="eyebrow">Оклад в месяц</span><b>${rub(rateOn(cfg, asOf))}</b></div>
+    </div>
+    ${n ? `<p class="muted small">Следующая выплата по графику — ${esc(dateRu(n.due))}: ${rub(n.amount)} за ${dm(n.from)}–${dm(n.to)}${n.paid ? n.closedOn ? ', уже покрыта тем, что пришло раньше' : `, из пришедшего раньше покрыто ${rub(n.paid)}` : ''}.</p>` : ''}
+    <div class="group"><div class="group-h">Выплаты по графику</div>
+      ${rows ? `<div class="list">${rows}</div>` : '<p class="muted small">С начала учёта ещё не было ни одной выплаты по графику.</p>'}
+      <p class="muted small">Деньги в категории «Зарплата» из любого банка закрывают выплаты по очереди, начиная с самой старой: частями, на разные карты, с опозданием — не важно. Нажмите на выплату, чтобы поправить сумму (отпуск, больничный, премия).</p>
+    </div>
+    <div class="group"><div class="group-h">Поступления зарплаты · ${st.receipts.length}</div>
+      ${recs ? `<div class="list">${recs}</div>` : '<p class="muted small">С начала учёта нет ни одной операции в категории «Зарплата».</p>'}
+    </div>
+    <div class="btn-row"><button class="secondary" type="button" data-act="settings">Настройки зарплаты</button></div>
+  </div>`, {
+    close: closeSheet,
+    pay: (el) => editPayout(el.dataset.due),
+    tx: (el) => { const t = S.byId.get(el.dataset.id); if (t) editTx(t); },
+    settings: () => {
+      closeSheet(); S.settings.openFold = 'salary'; setTab('more');
+      const d = $('details[data-fold="salary"]', screen); if (d) d.scrollIntoView({ block: 'start' });
+    },
+  });
+}
+function editPayout(due) {
+  const cfg = salCfg();
+  const p = payoutList(cfg, due).find(x => x.due === due);
+  if (!p) { openSalary(); return; }
+  const kopStr = (k) => String(k / 100).replace('.', ',');
+  openSheet(`<form class="sheet-form" data-submit="save" novalidate>
+    <div class="sheet-head"><h3>Выплата ${esc(dateRu(due))}</h3><button class="ghost" type="button" data-act="back">Назад</button></div>
+    <p class="muted">За работу с ${esc(dateRu(p.from))} по ${esc(dateRu(p.to))}. По окладу положено ${rub(p.base)}.</p>
+    <label class="amount" for="p-amt"><input id="p-amt" inputmode="decimal" value="${kopStr(p.amount)}" autocomplete="off" aria-label="Сколько положено за этот период, ₽"><span>₽</span></label>
+    <label class="field" for="p-note">Комментарий<input id="p-note" maxlength="80" value="${esc(p.note)}" placeholder="Например, отпуск, больничный, премия" autocomplete="off"></label>
+    <p class="err" id="p-err" hidden></p>
+    <button class="primary" type="submit">Сохранить</button>
+    ${p.adjusted ? '<button class="secondary" type="button" data-act="reset">Вернуть сумму по окладу</button>' : ''}
+  </form>`, {
+    back: () => openSalary(),
+    reset: async () => { delete salaryStore().adj[due]; await saveSettings(); render(); openSalary(); toast('Сумма выплаты — снова по окладу'); },
+    save: async () => {
+      const v = parseMoney($('#p-amt', sheet).value);
+      const err = $('#p-err', sheet);
+      if (v == null || v < 0) { err.textContent = 'Введите сумму, например 110 000'; err.hidden = false; return; }
+      const note = $('#p-note', sheet).value.trim();
+      const st = salaryStore();
+      if (v === p.base && !note) delete st.adj[due]; else st.adj[due] = { amount: v, note };
+      await saveSettings(); render(); openSalary(); toast('Выплата сохранена');
+    },
+  });
+}
+/** Настройки зарплаты для записи (создаются при первом обращении). */
+function salaryStore() {
+  if (!S.settings.salary) S.settings.salary = { on: false, start: '', opening: 0, days: [10, 25], rates: [], adj: {} };
+  const s = S.settings.salary;
+  if (!s.adj) s.adj = {};
+  if (!s.rates) s.rates = [];
+  return s;
 }
 
 // ---------- Операции ----------
@@ -711,6 +833,11 @@ function renderReport() {
   const rep = buildReport({ txs: S.txs, catMap: S.catMap, tagMap: S.tagMap, from: r.from, to: r.to, includeWork: r.includeWork, bank: r.bank });
   const max = rep.cats.length ? rep.cats[0].sum : 1;
   const allWork = workBalance(S.txs, S.catMap, S.tagMap);
+  const scfg = salCfg();
+  const sTo = r.to < dataUntil() ? r.to : dataUntil();
+  rep.salary = salaryOn() && sTo >= scfg.start && r.from <= sTo
+    ? salaryPeriod(scfg, S.txs, r.from > scfg.start ? r.from : scfg.start, sTo) : null;
+  const sp = rep.salary;
   const mMax = Math.max(1, ...rep.months.map(m => rep.byMonth.get(m) || 0));
   const presets = [['month', 'Этот месяц'], ['prev', 'Прошлый месяц'], ['3m', '3 месяца'], ['year', 'Этот год'], ['custom', 'Свой период']];
   screen.innerHTML = `<header class="scr-head"><h1>Отчёт</h1></header>
@@ -754,6 +881,15 @@ function renderReport() {
       ${rep.work.subs.length ? `<div class="bars">${rep.work.subs.map(e => barRow(e, rep.work.spent, rep.work.subs[0].sum)).join('')}</div>` : ''}
       <p class="muted small">За период выше. За всё время ${allWork.left > 0 ? `осталось вернуть <b>${rub(allWork.left)}</b>` : allWork.left < 0 ? `возмещено больше на <b>${rub(-allWork.left)}</b>` : 'всё возмещено'} (потрачено ${rub(allWork.spent)}, возмещено ${rub(allWork.back)}). ${r.includeWork ? 'Сейчас рабочие траты включены в расходы выше.' : 'В личные расходы и доходы рабочие траты и возмещения не входят.'}</p>
     </section>` : ''}
+    ${sp ? `<section class="card">
+      <div class="card-h"><h2>Зарплата — долг</h2><button class="link" type="button" data-act="salary">Подробно</button></div>
+      <div class="split three">
+        <div><span class="eyebrow">Начислено</span><span class="val">${rub(sp.pAccrued)}</span></div>
+        <div><span class="eyebrow">Получено</span><span class="val pos">${rub(sp.pReceived)}</span></div>
+        <div><span class="eyebrow">${sp.debt >= 0 ? 'Долг' : 'Аванс'} на ${dm(sp.asOf)}</span><span class="val">${rub(Math.abs(sp.debt))}</span></div>
+      </div>
+      <p class="muted small">Начислено — выплаты по графику со сроком в этом периоде, получено — операции в категории «Зарплата». Долг — на конец периода, вместе с долгами прошлых месяцев.</p>
+    </section>` : ''}
     <div class="btn-row">
       <button class="primary" type="button" data-act="xlsx" ${rep.rows.length ? '' : 'disabled'}>Выгрузить в Excel</button>
       <button class="secondary" type="button" data-act="png" ${rep.cats.length ? '' : 'disabled'}>График картинкой</button>
@@ -768,6 +904,7 @@ function renderReport() {
     bank: (el) => { r.bank = el.value; renderReport(); },
     work: (el) => { r.includeWork = el.checked; renderReport(); },
     queue: () => setTab('queue'),
+    salary: () => openSalary(),
     'work-ops': () => { S.ops.tag = 'work'; S.ops.cat = 'all'; S.ops.q = ''; S.ops.range = null; setTab('ops'); },
     ignored: () => { S.ops.tag = 'ignored'; S.ops.cat = 'all'; S.ops.q = ''; S.ops.range = { from: r.from, to: r.to }; setTab('ops'); },
     cat: (el) => {
@@ -802,6 +939,8 @@ function renderMore() {
   const catList = (type) => catItems(S.cats.filter(c => c.type === type && !c.group && !c.parent));
   const rules = [...S.rules].sort((a, b) => a.value.localeCompare(b.value));
   const fold = (k) => (S.settings.openFold === k ? 'open' : '');
+  const sc = salCfg();
+  const kopStr = (k) => String(k / 100).replace('.', ',');
   screen.innerHTML = `<header class="scr-head"><h1>Ещё</h1></header>
 
     <details class="card fold" ${fold('cats')} data-fold="cats"><summary><h2>Категории</h2><span class="muted">${S.cats.length}</span></summary>
@@ -840,6 +979,37 @@ function renderMore() {
         </div>
         <button class="secondary small" type="submit">Добавить правило</button>
       </form>
+    </details>
+
+    <details class="card fold" ${fold('salary')} data-fold="salary"><summary><h2>Зарплата</h2><span class="muted">${salaryOn() ? rub(rateOn(sc, today())) + ' в мес.' : 'не считается'}</span></summary>
+      <p class="muted small">Кошелёк сравнивает, сколько зарплаты положено по графику и сколько пришло на самом деле — всё, что отнесено к категории «Зарплата», в любом банке. Частями, на разные карты, с опозданием — не важно: важно, пришли ли деньги. Разница — долг компании, он виден на «Обзоре».</p>
+      <label class="check"><input type="checkbox" id="sl-on" ${sc.on ? 'checked' : ''} data-change="sl-on"><span><b>Считать долг по зарплате</b></span></label>
+      <div class="group"><div class="group-h">Оклад в месяц</div>
+        ${sc.rates.length ? `<ul class="rules">${sc.rates.map((r, i) => `<li>
+          <span class="rule-text"><b>${rub(r.amount)}</b><br><span class="muted">с ${esc(dateRu(r.from))}</span></span>
+          <button class="x" type="button" data-act="sl-rate-del" data-from="${esc(r.from)}" aria-label="Удалить оклад ${rub(r.amount)} с ${esc(dateRu(r.from))}">Удалить</button></li>`).join('')}</ul>` : '<p class="muted small">Оклад ещё не указан.</p>'}
+        <form class="group" data-submit="sl-rate-add">
+          <div class="range">
+            <label class="field" for="sl-amt">${sc.rates.length ? 'Новый оклад, ₽' : 'Оклад, ₽'}<input id="sl-amt" inputmode="decimal" placeholder="220 000" autocomplete="off"></label>
+            <label class="field" for="sl-from">С какого числа<input type="date" id="sl-from" value="${sc.rates.length ? today() : (sc.start || today())}"></label>
+          </div>
+          <button class="secondary small self-start" type="submit">${sc.rates.length ? 'Добавить новый оклад' : 'Сохранить оклад'}</button>
+        </form>
+        <p class="muted small">Оклад поменялся — добавьте новый с даты изменения. Выплаты за время до этой даты не пересчитаются.</p>
+      </div>
+      <div class="group"><div class="group-h">Дни выплат</div>
+        <div class="range">
+          <label class="field" for="sl-d1">Первая выплата, число<input type="number" id="sl-d1" min="1" max="28" inputmode="numeric" value="${sc.days[0]}" data-change="sl-days"></label>
+          <label class="field" for="sl-d2">Вторая выплата, число<input type="number" id="sl-d2" min="1" max="28" inputmode="numeric" value="${sc.days[1]}" data-change="sl-days"></label>
+        </div>
+        <p class="muted small" id="sl-sched">${esc(scheduleText(sc.days))}</p>
+      </div>
+      <div class="range">
+        <label class="field" for="sl-start">Начало учёта<input type="date" id="sl-start" value="${esc(sc.start)}" data-change="sl-start"></label>
+        <label class="field" for="sl-open">Долг компании на эту дату, ₽<input id="sl-open" inputmode="decimal" value="${sc.opening ? kopStr(sc.opening) : ''}" placeholder="0" autocomplete="off" data-change="sl-open"></label>
+      </div>
+      <p class="muted small">Выплаты считаются с даты начала учёта. Если на эту дату компания уже была должна — впишите сумму долга; если переплатила — со знаком минус.</p>
+      ${salaryOn() ? '<button class="secondary small self-start" type="button" data-act="sl-open-sheet">Посмотреть долг и выплаты</button>' : ''}
     </details>
 
     <details class="card fold" ${fold('imports')} data-fold="imports"><summary><h2>Загруженные выписки</h2><span class="muted">${S.imports.length}</span></summary>
@@ -953,6 +1123,52 @@ function renderMore() {
       await saveTxs(ch);
       S.settings.openFold = 'rules'; render(); toast(ch.length ? `Правило добавлено и сразу разобрало ${ch.length}` : 'Правило добавлено');
     },
+    'sl-on': async (el) => {
+      const st = salaryStore();
+      st.on = el.checked;
+      if (st.on && !st.start) {
+        const first = S.txs.reduce((m, t) => (!m || t.date < m ? t.date : m), '');
+        st.start = (first || today()).slice(0, 7) + '-01';
+      }
+      await saveSettings(); S.settings.openFold = 'salary'; render();
+      toast(st.on ? (st.rates.length ? 'Долг по зарплате считается' : 'Укажите оклад') : 'Долг по зарплате больше не считается');
+    },
+    'sl-rate-add': async () => {
+      const v = parseMoney($('#sl-amt', screen).value);
+      const from = $('#sl-from', screen).value;
+      if (v == null || v <= 0) { toast('Введите оклад, например 220 000'); return; }
+      if (!from) { toast('Укажите, с какого числа'); return; }
+      const st = salaryStore();
+      st.rates = st.rates.filter(r => r.from !== from).concat({ from, amount: v }).sort((a, b) => a.from.localeCompare(b.from));
+      if (!st.start) st.start = from;
+      if (!st.on) st.on = true;
+      await saveSettings(); S.settings.openFold = 'salary'; render(); toast('Оклад сохранён');
+    },
+    'sl-rate-del': async (el) => {
+      const st = salaryStore();
+      st.rates = st.rates.filter(r => r.from !== el.dataset.from);
+      await saveSettings(); S.settings.openFold = 'salary'; render(); toast('Оклад удалён');
+    },
+    'sl-days': async () => {
+      const a = parseInt($('#sl-d1', screen).value, 10), b = parseInt($('#sl-d2', screen).value, 10);
+      if (!(a >= 1 && a <= 28 && b >= 1 && b <= 28) || a === b) { toast('Дни выплат — два разных числа от 1 до 28'); return; }
+      const st = salaryStore();
+      st.days = [Math.min(a, b), Math.max(a, b)];
+      await saveSettings();
+      $('#sl-sched', screen).textContent = scheduleText(st.days);
+      toast('Дни выплат сохранены');
+    },
+    'sl-start': async (el) => {
+      if (!el.value) { el.value = salCfg().start; return; }
+      salaryStore().start = el.value; await saveSettings(); toast('Начало учёта сохранено');
+    },
+    'sl-open': async (el) => {
+      const raw = el.value.trim();
+      const v = raw ? parseMoney(raw) : 0;
+      if (v == null) { toast('Сумма не распознана, введите например 15 000'); return; }
+      salaryStore().opening = v; await saveSettings(); toast('Долг на начало сохранён');
+    },
+    'sl-open-sheet': () => openSalary(),
     'imp-del': (el) => {
       const i = S.imports.find(x => x.id === el.dataset.id); if (!i) return;
       const n = S.txs.filter(t => t.importId === i.id).length;

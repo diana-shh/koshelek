@@ -171,6 +171,25 @@ export async function exportXlsx(rep, { catMap, tagMap }) {
     XLSX.utils.book_append_sheet(wb, ws4, 'Рабочие траты');
   }
 
+  const sal = rep.salary;
+  if (sal) {
+    const s6 = [['Зарплата — долг компании'], [period], [],
+      ['Начислено за период', sal.pAccrued / 100], ['Получено за период', sal.pReceived / 100],
+      [sal.debt >= 0 ? `Долг компании на ${dateDots(sal.asOf)}` : `Получено вперёд на ${dateDots(sal.asOf)}`, Math.abs(sal.debt) / 100],
+      ['Учёт ведётся с', dateDots(sal.cfg.start)], [],
+      ['Срок выплаты', 'За работу', 'Положено, ₽', 'Пришло, ₽', 'Закрыта', 'Задержка, дн.', 'Комментарий']];
+    for (const it of sal.pItems) {
+      s6.push([dateDots(it.due), `${dateDots(it.from)} – ${dateDots(it.to)}`, it.amount / 100, it.paid / 100,
+        it.closedOn ? dateDots(it.closedOn) : 'не закрыта', it.closedOn ? it.delay : it.overdue, it.note || '']);
+    }
+    s6.push([], ['Поступления зарплаты'], ['Дата', 'Время', 'Сумма, ₽', 'Банк', 'Описание', 'Комментарий']);
+    for (const t of sal.pReceipts) s6.push([dateDots(t.date), t.time || '', t.amount / 100, t.bank || '', prettyDesc(t.desc), t.comment || '']);
+    const ws6 = XLSX.utils.aoa_to_sheet(s6);
+    setFormats(ws6, XLSX, { 1: MONEY, 2: MONEY, 3: MONEY });
+    ws6['!cols'] = [{ wch: 30 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 40 }, { wch: 14 }, { wch: 24 }];
+    XLSX.utils.book_append_sheet(wb, ws6, 'Зарплата');
+  }
+
   if (rep.ignored.length) {
     const s5 = [['Не учитываются'], [period], ['Эти операции отмечены «не учитывать» и не входят в суммы выше.'], [],
       ['Дата', 'Время', 'Банк', 'Описание', 'Категория', 'Комментарий', 'Сумма, ₽']];
