@@ -70,11 +70,13 @@ export function buildReport({ txs, catMap, tagMap, from, to, includeWork, bank }
     if (!c) { uncat++; uncatSum += Math.abs(t.amount); }
     const key = c ? c.id : '';
     const name = c ? catLabel(c.id, catMap) : 'Без категории';
-    if (t.amount < 0) {
+    // Поступление в статье расхода (вернули долю за сквош, за ужин) уменьшает эту статью, а не считается доходом.
+    const offset = t.amount > 0 && c && c.type === 'out';
+    if (t.amount < 0 || offset) {
       const v = -t.amount;
       exp += v;
       const e = byCat.get(key) || { id: key, name, sum: 0, count: 0 };
-      e.sum += v; e.count++; byCat.set(key, e);
+      e.sum += v; if (!offset) e.count++; byCat.set(key, e);
       const m = t.date.slice(0, 7);
       byMonth.set(m, (byMonth.get(m) || 0) + v);
       const cm = catMonth.get(key) || new Map();

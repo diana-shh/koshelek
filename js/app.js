@@ -10,7 +10,7 @@ import { merchantKey, isGenericKey, autoCategory, sortRules, makeRule, ruleMatch
 import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
 import { buildReport, exportXlsx, chartPng, isWorkTx, isReimbTx, workBalance, catLabel } from './report.js';
 
-const APP_VERSION = '1.4.1';
+const APP_VERSION = '1.4.2';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -220,6 +220,11 @@ function catChipsHtml(name, dir, selected) {
     const subs = S.cats.filter(c => c.parent === g.id);
     if (subs.length) html += `<span class="chip-group">${esc(g.name)}${g.work ? ' — к возмещению' : ''}</span>` + chipsHtml(name, subs, selected);
   }
+  // Поступление можно отнести к статье расхода: вернули долю, компенсировали — статья уменьшится.
+  if (dir === 'in') {
+    const outs = S.cats.filter(c => c.type === 'out' && !c.group && !c.work);
+    html += `<span class="chip-group">Вернули за расход — уменьшит статью</span>` + chipsHtml(name, outs, selected);
+  }
   return html;
 }
 
@@ -396,7 +401,8 @@ function fillOps() {
   let exp = 0, inc = 0;
   for (const t of list) {
     if (!counted(t)) continue;
-    if (t.amount < 0) exp -= t.amount; else inc += t.amount;
+    const cc = S.catMap.get(t.category);
+    if (t.amount < 0 || (cc && cc.type === 'out')) exp -= t.amount; else inc += t.amount;
   }
   const isWorkView = S.ops.tag === 'work' || S.ops.tag === 'pending';
   const wbv = isWorkView ? workBalance(list, S.catMap, S.tagMap) : null;
