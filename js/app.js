@@ -3,7 +3,7 @@
 import * as db from './db.js';
 import {
   rub, money, MINUS, today, monthOf, addMonths, monthEnd, monthTitle, dayTitle, dateDots, dateRu,
-  esc, hash, uid, normText, prettyDesc, parseMoney, saveFile, monthShort,
+  esc, hash, uid, normText, prettyDesc, parseMoney, saveFile, monthShort, ymd,
 } from './util.js';
 import { DEFAULT_CATEGORIES, DEFAULT_TAGS, BANKS } from './catalog.js';
 import { isCashWithdrawal, merchantKey, isGenericKey, autoCategory, sortRules, makeRule, ruleMatches, dirOf, categoryFits, ruleScopes, suggestScope, findCounterpart } from './categorize.js';
@@ -11,7 +11,7 @@ import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
 import { buildReport, exportXlsx, chartPng, isWorkTx, isReimbTx, workBalance, catLabel } from './report.js';
 import { salaryCfg, salaryState, salaryPeriod, payoutList, rateOn, scheduleText, dm } from './salary.js';
 
-const APP_VERSION = '1.10.2';
+const APP_VERSION = '1.10.3';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -1426,6 +1426,12 @@ async function doBackup() {
   if (ok) { S.settings.lastBackup = new Date().toISOString(); await saveSettings(); toast('Копия сохранена'); render(); }
 }
 
+/** «14 ноября 2026, 18:43» — время создания копии по часам телефона, чтобы отличать версии одного файла. */
+function copyTime(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return dateRu(String(iso).slice(0, 10));
+  return `${dateRu(ymd(d))}, ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
 $('#restore-in').addEventListener('change', async (e) => {
   const f = e.target.files && e.target.files[0];
   e.target.value = '';
@@ -1436,7 +1442,7 @@ $('#restore-in').addEventListener('change', async (e) => {
   const n = (payload.data.tx || []).length;
   openSheet(`<div class="sheet-form">
     <div class="sheet-head"><h3>Восстановить из копии</h3><button class="ghost" type="button" data-act="close">Отмена</button></div>
-    <p>Копия от ${esc(dateRu(String(payload.exportedAt).slice(0, 10)))}: ${n} ${plural(n, 'операция', 'операции', 'операций')}.</p>
+    <p>Копия от ${esc(copyTime(payload.exportedAt))}: ${n} ${plural(n, 'операция', 'операции', 'операций')}.</p>
     <p class="muted">Все текущие данные в кошельке заменятся данными из копии.</p>
     <button class="danger" type="button" data-act="go">Заменить данные</button></div>`, {
     close: closeSheet,
