@@ -11,7 +11,7 @@ import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
 import { buildReport, exportXlsx, chartPng, isWorkTx, isReimbTx, workBalance, catLabel } from './report.js';
 import { salaryCfg, salaryState, salaryPeriod, payoutList, rateOn, scheduleText, dm } from './salary.js';
 
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.7.0';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -60,6 +60,7 @@ async function load() {
   S.tags = m.tags || DEFAULT_TAGS.map(t => ({ ...t }));
   S.profiles = m.profiles || {};
   S.settings = m.settings || {};
+  applyTheme(S.settings.theme);
   // Новые категории из обновлений приложения — добавить, но не возвращать удалённые человеком.
   const knownCats = new Set(S.settings.knownCats || S.cats.map(c => c.id));
   for (const d of DEFAULT_CATEGORIES) {
@@ -98,6 +99,19 @@ const saveTxs = (list) => db.putMany('tx', list);
 const saveCats = () => { reindex(); return db.setMeta('categories', S.cats); };
 const saveTags = () => { reindex(); return db.setMeta('tags', S.tags); };
 const saveSettings = () => db.setMeta('settings', S.settings);
+
+/** Тема: 'light' — чёрный текст на белом, 'dark' — наоборот, иначе — как в телефоне.
+ *  Копия в localStorage нужна, чтобы тема включалась сразу при запуске, до чтения базы. */
+const THEME_BG = { light: '#FFFFFF', dark: '#000000' };
+function applyTheme(t) {
+  const root = document.documentElement;
+  if (t === 'light' || t === 'dark') root.dataset.theme = t; else delete root.dataset.theme;
+  for (const m of document.querySelectorAll('meta[name="theme-color"]')) {
+    const own = (m.media || '').includes('dark') ? THEME_BG.dark : THEME_BG.light;
+    m.content = THEME_BG[t] || own;
+  }
+  try { localStorage.setItem('koshelek-theme', t || 'auto'); } catch {}
+}
 
 // ---------- зарплата ----------
 /** Последний день, за который есть данные: конец самой свежей выписки или последняя операция. */
@@ -1040,6 +1054,12 @@ function renderMore() {
     </section>
 
     <section class="card">
+      <h2>Оформление</h2>
+      <fieldset class="chips" aria-label="Тема">${[['auto', 'Как в телефоне'], ['light', 'Светлая'], ['dark', 'Тёмная']].map(([v, n]) => `<label class="chip"><input type="radio" name="theme" value="${v}" ${(S.settings.theme || 'auto') === v ? 'checked' : ''} data-change="theme"><span>${n}</span></label>`).join('')}</fieldset>
+      <p class="muted small">Светлая — чёрный текст на белом фоне, тёмная — белый текст на чёрном. «Как в телефоне» переключается вместе с темой iPhone.</p>
+    </section>
+
+    <section class="card">
       <h2>О приложении</h2>
       <p class="muted small">Версия ${APP_VERSION}. Работает без интернета. Операций: ${S.txs.length}, правил: ${S.rules.length}. <span id="persist-st"></span></p>
       <div class="btn-row"><button class="secondary" type="button" data-act="upd-check" id="upd-btn">Проверить обновления</button></div>
@@ -1179,6 +1199,11 @@ function renderMore() {
       salaryStore().opening = v; await saveSettings(); toast('Долг на начало сохранён');
     },
     'sl-open-sheet': () => openSalary(),
+    theme: async (el) => {
+      S.settings.theme = el.value === 'auto' ? undefined : el.value;
+      applyTheme(S.settings.theme); await saveSettings();
+      toast(el.value === 'light' ? 'Включена светлая тема' : el.value === 'dark' ? 'Включена тёмная тема' : 'Тема — как в телефоне');
+    },
     'imp-del': (el) => {
       const i = S.imports.find(x => x.id === el.dataset.id); if (!i) return;
       const n = S.txs.filter(t => t.importId === i.id).length;
