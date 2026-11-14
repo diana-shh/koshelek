@@ -160,7 +160,7 @@ b, strong { font-weight: 600; }
 .filter-row { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
 .filter-row > * { flex: 1 1 140px; min-width: 0; }
 /* Поля ввода — одна линия снизу. */
-input[type="search"], select, .field input, .add-row input, .edit-list input, .rule-add input, .part .p-note {
+input[type="search"], select, .field input, .add-row input, .edit-list input, .rule-add input, .part .p-note, .cat-add input {
   font-size: 17px; background: transparent; border: 0; border-bottom: 1.4px solid var(--ink); border-radius: 0; padding: 10px 0; width: 100%; min-height: 46px; color: var(--ink);
 }
 input[type="search"] { -webkit-appearance: none; appearance: none; }
@@ -250,6 +250,12 @@ button.bar-row { cursor: pointer; padding-block: 2px; }
 .q-ex li:first-child { border-top: 0; }
 .group { display: flex; flex-direction: column; gap: 8px; }
 .group-h { font-size: 13px; color: var(--muted); }
+/* Виды категорий в «Ещё → Категории»: крупно, в контрастной рамке. */
+.cat-group { margin-top: 10px; }
+.cat-add { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.cat-add .add-row select { flex: 1; width: 100%; min-width: 0; }
+.cat-type { font-size: 18px; font-weight: 600; letter-spacing: -.01em; color: var(--ink); border: 2px solid var(--ink); padding: 9px 12px; }
+.cat-type-note { display: block; font-size: 13px; font-weight: 400; color: var(--muted); margin-top: 2px; }
 details.more { border-top: 1px solid var(--hair); padding-top: 10px; display: flex; flex-direction: column; gap: 10px; }
 details.more > summary { cursor: pointer; font-size: 15px; list-style: none; }
 details.more > summary::-webkit-details-marker { display: none; }

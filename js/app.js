@@ -11,7 +11,7 @@ import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
 import { buildReport, exportXlsx, chartPng, isWorkTx, isReimbTx, workBalance, catLabel } from './report.js';
 import { salaryCfg, salaryState, salaryPeriod, payoutList, rateOn, scheduleText, dm } from './salary.js';
 
-const APP_VERSION = '1.10.1';
+const APP_VERSION = '1.10.2';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -1091,12 +1091,14 @@ function renderMore() {
   screen.innerHTML = `<header class="scr-head"><h1>Ещё</h1></header>
 
     <details class="card fold" ${fold('cats')} data-fold="cats"><summary><h2>Категории</h2><span class="muted">${S.cats.length}</span></summary>
-      ${['out', 'in', 'transfer'].map(type => `<div class="group"><div class="group-h">${typeName[type]}</div><ul class="edit-list">${catList(type)}</ul></div>`).join('')}
-      ${groups.map(g => `<div class="group"><div class="group-h">${esc(g.name)} — подкатегории${g.work ? ' (к возмещению, не входят в личный бюджет)' : ''}</div><ul class="edit-list">${catItems(S.cats.filter(c => c.parent === g.id))}</ul></div>`).join('')}
-      <form class="add-row" data-submit="cat-add">
+      ${['out', 'in', 'transfer'].map(type => `<div class="group cat-group"><div class="cat-type">${typeName[type]}</div><ul class="edit-list">${catList(type)}</ul></div>`).join('')}
+      ${groups.map(g => `<div class="group cat-group"><div class="cat-type">${esc(g.name)} — подкатегории${g.work ? '<span class="cat-type-note">к возмещению, не входят в личный бюджет</span>' : ''}</div><ul class="edit-list">${catItems(S.cats.filter(c => c.parent === g.id))}</ul></div>`).join('')}
+      <form class="cat-add" data-submit="cat-add">
         <input id="nc-name" maxlength="40" placeholder="Новая категория" autocomplete="off" aria-label="Название новой категории">
-        <select id="nc-type" aria-label="Тип"><option value="out">расход</option><option value="in">доход</option>${groups.map(g => `<option value="sub:${esc(g.id)}">${esc(g.name)} (подкатегория)</option>`).join('')}</select>
-        <button class="secondary small" type="submit">Добавить</button>
+        <div class="add-row">
+          <select id="nc-type" aria-label="Куда добавить"><option value="out">расход</option><option value="in">доход</option>${groups.map(g => `<option value="sub:${esc(g.id)}">${esc(g.name)} (подкатегория)</option>`).join('')}</select>
+          <button class="secondary small" type="submit">Добавить</button>
+        </div>
       </form>
     </details>
 
