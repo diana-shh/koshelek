@@ -111,20 +111,26 @@ export function autoCategory(tx, sortedRules, catMap, ctx = {}) {
   if (catMap.has('own') && isOwnTransfer(tx, ctx)) return { category: 'own', by: 'own' };
   const text = tx.desc + ' ' + (tx.raw || '');
   const transferLike = TRANSFER_LIKE.test(text.toUpperCase().replace(/Ё/g, 'Е')) || /перевод|пополнени/i.test(tx.bankCategory || '');
+  const fromDesc = descCategory(text);
   const tries = [
-    ['desc', descCategory(text)],
+    ['desc', fromDesc],
     ['bank', bankCategory(tx.bankCategory)],
     ['mcc', transferLike ? null : mccCategory(tx.mcc)],
     ['known', transferLike ? null : knownCategory(tx.desc)],
   ];
-  for (const [by, id0] of tries) {
-    let id = id0;
+  // Возврат за покупку: сначала ищем, за что вернули (Ozon → «Маркетплейсы»), чтобы возврат уменьшил эту статью;
+  // общая «Возвраты покупок» — только если магазин не узнали.
+  let fallback = null;
+  for (const [by, id] of tries) {
     if (!id) continue;
-    let c = catMap.get(id);
-    if (c && dirOf(tx) === 'in' && c.type === 'out') { id = 'refund'; c = catMap.get(id); }
-    if (c && categoryFits(c, tx)) return { category: id, by };
+    const c = catMap.get(id);
+    if (!c) continue;
+    if (dirOf(tx) === 'in' && id === 'refund') { fallback = fallback || { category: id, by }; continue; }
+    // Поступление в статье расхода уменьшает её (вернули деньги за покупку).
+    if (dirOf(tx) === 'in' && c.type === 'out' && !c.work) return { category: id, by };
+    if (categoryFits(c, tx)) return { category: id, by };
   }
-  return null;
+  return fallback;
 }
 
 /** ignore: true — правило «не учитывать» вместо категории. */
