@@ -11,7 +11,7 @@ import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
 import { buildReport, exportXlsx, chartPng, isWorkTx, isReimbTx, workBalance, catLabel } from './report.js';
 import { salaryCfg, salaryState, salaryPeriod, payoutList, rateOn, scheduleText, dm } from './salary.js';
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -300,7 +300,17 @@ function renderHome() {
   const max = top.length ? top[0].sum : 1;
   const lastBackup = S.settings.lastBackup;
   const backupOld = !lastBackup || (Date.now() - new Date(lastBackup).getTime()) > 30 * 86400000;
-  screen.innerHTML = `<header class="scr-head"><h1 class="brand">Кошелёк</h1></header>
+  const sal = salaryOn() ? salaryState(salCfg(), S.txs, dataUntil()) : null;
+  const news = [
+    `Сегодня ${dateRu(today())}`,
+    `Расходы за ${monthTitle(m).toLowerCase()} — ${rub(rep.exp)}`,
+    uncat.length ? `Нужно разобрать: ${uncat.length}` : 'Всё разобрано',
+    wb.left > 0 ? `Рабочие траты: вернуть ${rub(wb.left)}` : null,
+    sal && sal.debt > 0 ? `Зарплата: компания должна ${rub(sal.debt)}` : null,
+  ].filter(Boolean);
+  const line = '→ → → ' + news.join(' → ');
+  screen.innerHTML = `<div class="ticker" aria-hidden="true"><div class="ticker-in" style="--dur:${Math.max(14, Math.round(line.length / 5))}s"><span>${esc(line)}</span><span>${esc(line)}</span></div></div>
+    <header class="scr-head"><h1 class="brand">Кошелёк</h1><span class="head-sub">${esc(monthTitle(m).split(' ')[0])}</span></header>
     ${install}
     <section class="hero">
       <div class="eyebrow">Расходы · ${esc(monthTitle(m))}</div>
@@ -311,13 +321,13 @@ function renderHome() {
       </div>
     </section>
     ${uncat.length ? `<button class="alert" type="button" data-act="go" data-tab="queue">
-        <span><b>Нужно разобрать: ${uncat.length}</b><span class="muted"> · непонятно, куда отнести</span></span><span aria-hidden="true">›</span></button>` : ''}
+        <span><b>Нужно разобрать: ${uncat.length}</b><span class="muted"> · непонятно, куда отнести</span></span><span aria-hidden="true">→</span></button>` : ''}
     ${top.length ? `<section class="card">
         <div class="card-h"><h2>Куда ушли деньги</h2><button class="link" type="button" data-act="go" data-tab="report">Весь отчёт</button></div>
         <div class="bars">${top.map(c => barRow(c, rep.exp, max)).join('')}</div>
       </section>` : ''}
     ${wb.list.length ? `<button class="alert soft" type="button" data-act="work">
-        <span><b>${wb.left > 0 ? `Рабочие траты: осталось вернуть ${rub(wb.left)}` : wb.left < 0 ? `Рабочие траты: возмещено больше на ${rub(-wb.left)}` : 'Рабочие траты возмещены полностью'}</b><span class="muted"> · потрачено ${rub(wb.spent)}, возмещено ${rub(wb.back)}</span></span><span aria-hidden="true">›</span></button>` : ''}
+        <span><b>${wb.left > 0 ? `Рабочие траты: осталось вернуть ${rub(wb.left)}` : wb.left < 0 ? `Рабочие траты: возмещено больше на ${rub(-wb.left)}` : 'Рабочие траты возмещены полностью'}</b><span class="muted"> · потрачено ${rub(wb.spent)}, возмещено ${rub(wb.back)}</span></span><span aria-hidden="true">→</span></button>` : ''}
     ${salaryOn() ? salaryAlertHtml() : ''}
     <div class="btn-row">
       <button class="primary" type="button" data-act="upload">Загрузить выписки</button>
@@ -361,7 +371,7 @@ function salaryAlertHtml() {
   const o = st.oldestUnpaid;
   const sub = o ? `задержка с ${dm(o.due)} — ${daysWord(o.overdue)}` : st.next ? `следующая выплата ${dm(st.next.due)}` : '';
   return `<button class="alert soft" type="button" data-act="salary">
-    <span><b>${head}</b><span class="muted"> · на ${dm(st.asOf)}${sub ? ' · ' + sub : ''}</span></span><span aria-hidden="true">›</span></button>`;
+    <span><b>${head}</b><span class="muted"> · на ${dm(st.asOf)}${sub ? ' · ' + sub : ''}</span></span><span aria-hidden="true">→</span></button>`;
 }
 function payoutStatus(it) {
   if (it.opening) return it.status === 'paid' ? `<span class="pill ok">погашен ${dm(it.closedOn)}</span>` : `<span class="pill warn">не погашен</span>${it.paid ? ` пришло ${rub(it.paid)}` : ''}`;
@@ -488,9 +498,9 @@ function renderOps() {
   if (o.tag === 'work' || o.tag === 'pending') period = `<p class="muted">Рабочие траты и их возмещения за всё время.</p>`;
   else if (o.range) period = `<div class="range-bar"><span>${dateDots(o.range.from)} – ${dateDots(o.range.to)}</span><button class="link" type="button" data-act="by-month">по месяцам</button></div>`;
   else period = `<nav class="month" aria-label="Месяц">
-      <button class="round" type="button" data-act="prev" aria-label="Предыдущий месяц">‹</button>
+      <button class="round" type="button" data-act="prev" aria-label="Предыдущий месяц">←</button>
       <h2>${esc(monthTitle(o.month))}</h2>
-      <button class="round" type="button" data-act="next" aria-label="Следующий месяц">›</button>
+      <button class="round" type="button" data-act="next" aria-label="Следующий месяц">→</button>
     </nav>`;
   screen.innerHTML = `<header class="scr-head"><h1>Операции</h1><button class="ghost" type="button" data-act="add">+ Вручную</button></header>
     ${period}
@@ -858,7 +868,7 @@ function renderReport() {
         <div><span class="eyebrow">Разница</span><span class="val ${rep.inc - rep.exp < 0 ? 'neg' : ''}">${money(rep.inc - rep.exp)}</span></div>
       </div>
     </section>
-    ${rep.uncat ? `<button class="alert" type="button" data-act="queue"><span><b>${rep.uncat} ${plural(rep.uncat, 'операция', 'операции', 'операций')} без категории</b><span class="muted"> на ${rub(rep.uncatSum)} · разобрать</span></span><span aria-hidden="true">›</span></button>` : ''}
+    ${rep.uncat ? `<button class="alert" type="button" data-act="queue"><span><b>${rep.uncat} ${plural(rep.uncat, 'операция', 'операции', 'операций')} без категории</b><span class="muted"> на ${rub(rep.uncatSum)} · разобрать</span></span><span aria-hidden="true">→</span></button>` : ''}
     <section class="card">
       <h2>Распределение расходов</h2>
       ${rep.cats.length ? `<div class="bars">${rep.cats.map(c => barRow(c, rep.exp, max, 'cat')).join('')}</div>` : '<p class="muted">За этот период расходов нет.</p>'}

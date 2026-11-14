@@ -1,13 +1,13 @@
 // Работа без интернета: все файлы приложения хранятся в кэше телефона.
 // При изменении любого файла увеличить VERSION — тогда телефон предложит обновиться.
-const VERSION = 'koshelek-v10';
+const VERSION = 'koshelek-v11';
 const FILES = [
   './',
   'index.html',
   'manifest.webmanifest',
   'js/app.js', 'js/db.js', 'js/util.js', 'js/catalog.js', 'js/categorize.js', 'js/importers.js', 'js/report.js', 'js/salary.js',
   'vendor/pdf.min.mjs', 'vendor/pdf.worker.min.mjs', 'vendor/xlsx.full.min.js',
-  'fonts/unbounded-cyrillic.woff2', 'fonts/unbounded-latin.woff2', 'fonts/unbounded-latin-ext.woff2',
+  'fonts/manrope-cyrillic.woff2', 'fonts/manrope-latin.woff2',
   'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png',
 ];
 

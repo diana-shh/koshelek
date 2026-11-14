@@ -209,17 +209,6 @@ export async function exportXlsx(rep, { catMap, tagMap }) {
 }
 
 // ---------- картинка графика ----------
-function roundRect(ctx, x, y, w, h, r) {
-  r = Math.min(r, h / 2, w / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
-
 export async function chartPng(rep) {
   const top = rep.cats.slice(0, 14);
   const restSum = rep.cats.slice(14).reduce((s, c) => s + c.sum, 0);
@@ -229,30 +218,31 @@ export async function chartPng(rep) {
   const cv = document.createElement('canvas');
   cv.width = W; cv.height = H;
   const ctx = cv.getContext('2d');
-  const font = '-apple-system, "SF Pro Text", "Helvetica Neue", Arial, sans-serif';
+  const font = '"Manrope", -apple-system, "Helvetica Neue", Arial, sans-serif';
   ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = '#15202B'; ctx.font = `700 52px ${font}`; ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = '#000000'; ctx.font = `400 56px ${font}`; ctx.textBaseline = 'alphabetic';
   ctx.fillText('Расходы по категориям', pad, 104);
-  ctx.fillStyle = '#5D6A77'; ctx.font = `400 32px ${font}`;
+  ctx.fillRect(pad, 196 + 12, W - 2 * pad, 2);
+  ctx.fillStyle = '#6B6B6B'; ctx.font = `400 32px ${font}`;
   ctx.fillText(`${dateDots(rep.from)} – ${dateDots(rep.to)} · всего ${rub(rep.exp)}`, pad, 156);
   if (!rep.includeWork) ctx.fillText('без рабочих трат', pad, 196);
   const max = top.length ? top[0].sum : 1;
   top.forEach((c, i) => {
     const y = headH + i * rowH;
     const share = rep.exp ? Math.round(c.sum / rep.exp * 100) : 0;
-    ctx.fillStyle = '#15202B'; ctx.font = `500 32px ${font}`; ctx.textAlign = 'left';
+    ctx.fillStyle = '#000000'; ctx.font = `400 32px ${font}`; ctx.textAlign = 'left';
     let name = c.name; while (ctx.measureText(name).width > 600 && name.length > 4) name = name.slice(0, -2) + '…';
     ctx.fillText(name, pad, y + 36);
-    ctx.textAlign = 'right'; ctx.font = `600 32px ${font}`;
+    ctx.textAlign = 'right'; ctx.font = `500 32px ${font}`;
     ctx.fillText(rub(c.sum), W - pad - 96, y + 36);
-    ctx.fillStyle = '#5D6A77'; ctx.font = `400 30px ${font}`;
+    ctx.fillStyle = '#6B6B6B'; ctx.font = `400 30px ${font}`;
     ctx.fillText((share < 1 ? '<1' : share) + '%', W - pad, y + 36);
     ctx.textAlign = 'left';
-    ctx.fillStyle = '#E7ECF0'; roundRect(ctx, pad, y + 54, W - 2 * pad, 14, 7); ctx.fill();
-    ctx.fillStyle = '#15202B'; roundRect(ctx, pad, y + 54, Math.max(14, (W - 2 * pad) * c.sum / max), 14, 7); ctx.fill();
+    ctx.fillStyle = '#E8E8E8'; ctx.fillRect(pad, y + 58, W - 2 * pad, 6);
+    ctx.fillStyle = '#000000'; ctx.fillRect(pad, y + 58, Math.max(6, (W - 2 * pad) * c.sum / max), 6);
   });
-  ctx.fillStyle = '#5D6A77'; ctx.font = `400 26px ${font}`;
-  ctx.fillText('Кошелёк', pad, H - 24);
+  ctx.fillStyle = '#6B6B6B'; ctx.font = `400 26px ${font}`;
+  ctx.fillText('Кошелёк →', pad, H - 24);
   const blob = await new Promise(res => cv.toBlob(res, 'image/png'));
   return saveFile(blob, `Расходы_${rep.from}_${rep.to}.png`);
 }
