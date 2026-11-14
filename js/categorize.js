@@ -102,7 +102,18 @@ export function isOwnTransfer(tx, ctx = {}) {
 }
 
 /** Предложение категории для операции или null, если надо спросить. */
+/** Снятие наличных (по описанию, категории банка или MCC 6010/6011). По снятию не видно, на что ушли деньги,
+ *  поэтому такие траты кошелёк всегда спрашивает и правил для них не создаёт. */
+export function isCashWithdrawal(tx) {
+  if (!tx || !(tx.amount < 0)) return false;
+  const text = ((tx.desc || '') + ' ' + (tx.raw || '')).toUpperCase().replace(/Ё/g, 'Е');
+  if (/СНЯТИЕ НАЛИЧН|ВЫДАЧА НАЛИЧН|НАЛИЧНЫЕ В БАНКОМАТ|^\s*БАНКОМАТ|\bATM\b/.test(text)) return true;
+  if (/наличн/i.test(tx.bankCategory || '')) return true;
+  return ['6010', '6011'].includes(String(tx.mcc || ''));
+}
+
 export function autoCategory(tx, sortedRules, catMap, ctx = {}) {
+  if (isCashWithdrawal(tx)) return null;
   for (const r of sortedRules) {
     if (!ruleMatches(r, tx)) continue;
     if (r.ignore) return { ignore: true, by: 'rule', ruleId: r.id };

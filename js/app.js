@@ -6,12 +6,12 @@ import {
   esc, hash, uid, normText, prettyDesc, parseMoney, saveFile, monthShort,
 } from './util.js';
 import { DEFAULT_CATEGORIES, DEFAULT_TAGS, BANKS } from './catalog.js';
-import { merchantKey, isGenericKey, autoCategory, sortRules, makeRule, ruleMatches, dirOf, categoryFits, ruleScopes, suggestScope, findCounterpart } from './categorize.js';
+import { isCashWithdrawal, merchantKey, isGenericKey, autoCategory, sortRules, makeRule, ruleMatches, dirOf, categoryFits, ruleScopes, suggestScope, findCounterpart } from './categorize.js';
 import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
 import { buildReport, exportXlsx, chartPng, isWorkTx, isReimbTx, workBalance, catLabel } from './report.js';
 import { salaryCfg, salaryState, salaryPeriod, payoutList, rateOn, scheduleText, dm } from './salary.js';
 
-const APP_VERSION = '1.8.1';
+const APP_VERSION = '1.9.0';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -87,6 +87,14 @@ async function load() {
   const fun = S.cats.find(c => c.id === 'fun');
   if (fun && fun.name === 'Развлечения и хобби') fun.name = 'Спорт, развлечения, хобби';
   S.settings.knownCats = DEFAULT_CATEGORIES.map(c => c.id);
+  // Снятие наличных всегда разбирает человек: автоматическую категорию «Снятие наличных» снимаем.
+  const cashBack = [];
+  for (const t of txs) {
+    if (t.category && !t.ignored && ['bank', 'desc', 'mcc', 'known', 'rule'].includes(t.catBy) && isCashWithdrawal(t)) {
+      t.category = null; t.catBy = null; t.ruleId = null; cashBack.push(t);
+    }
+  }
+  if (cashBack.length) await db.putMany('tx', cashBack);
   S.txs = txs;
   S.rules = rules;
   S.imports = imports.sort((a, b) => b.at.localeCompare(a.at));
@@ -141,7 +149,7 @@ function applyRule(rule, exceptId, includeManual = false) {
   const changed = [];
   for (const t of S.txs) {
     if (t.id === exceptId || (!includeManual && t.catBy === 'manual')) continue;
-    if (!ruleMatches(rule, t)) continue;
+    if (!ruleMatches(rule, t) || isCashWithdrawal(t)) continue;
     if (rule.ignore) { t.ignored = true; t.ruleId = rule.id; }
     else {
       if (!categoryFits(S.catMap.get(rule.category), t)) continue;
@@ -564,7 +572,7 @@ function editTx(t) {
   const dir = t ? dirOf(t) : 'out';
   const tagsSel = t ? [...(t.tags || [])] : [];
   const sameKey = t ? S.txs.filter(o => o.id !== t.id && o.key === t.key && dirOf(o) === dir).length : 0;
-  const canRule = t && !isGenericKey(t.key);
+  const canRule = t && !isGenericKey(t.key) && !isCashWithdrawal(t);
   const html = `<form data-submit="save" class="sheet-form" novalidate>
     <div class="sheet-head"><h3>${isNew ? 'Новая операция' : 'Операция'}</h3><button class="ghost" type="button" data-act="close">Закрыть</button></div>
     ${isNew ? `
@@ -726,7 +734,7 @@ function queueGroups() {
   for (const t of S.txs) {
     if (!needsAnswer(t)) continue;
     const gkBase = (isGenericKey(t.key) ? 'g:' + normText(prettyDesc(t.desc)).replace(/[\d*•№]+/g, '').replace(/\s+/g, ' ') : t.key) + '|' + dirOf(t);
-    const gk = (S.queue.split.has(gkBase) || (isGenericKey(t.key) && counterpartOf(t, { loose: true }))) ? 'tx:' + t.id : gkBase;
+    const gk = (S.queue.split.has(gkBase) || isCashWithdrawal(t) || (isGenericKey(t.key) && counterpartOf(t, { loose: true }))) ? 'tx:' + t.id : gkBase;
     if (!groups.has(gk)) groups.set(gk, { id: gk, base: gkBase, key: t.key, dir: dirOf(t), items: [] });
     groups.get(gk).items.push(t);
   }
@@ -756,6 +764,7 @@ function renderQueue() {
   const hintCat = g.items.length === 1 ? (counterpartOf(t0) || counterpartOf(t0, { loose: true })) : null;
   const preselect = hintCat ? 'own' : null;
   const generic = isGenericKey(g.key);
+  const cash = g.items.every(isCashWithdrawal);
   screen.innerHTML = `<header class="scr-head"><h1>Разобрать</h1><span class="muted">осталось ${total}</span></header>
     <article class="card q-card">
       <div class="q-title">${esc(prettyDesc(t0.desc))}</div>
@@ -763,7 +772,7 @@ function renderQueue() {
       ${t0.bankCategory ? `<div class="muted small">Банк пишет: «${esc(t0.bankCategory)}»</div>` : ''}
       ${hintCat ? `<div class="hint">Похоже на перевод между своими счетами: есть встречная операция ${money(hintCat.amount)} в ${esc(hintCat.bank)} ${dateDots(hintCat.date)}${hintCat.time ? ' в ' + esc(hintCat.time) : ''}. Если выбрать «Между своими счетами», она отметится тоже.</div>` : ''}
       ${g.items.length > 1 ? `<ul class="q-ex">${g.items.slice(0, 4).map(t => `<li><span>${dateDots(t.date)}${t.time ? ' ' + esc(t.time) : ''}</span><span class="${amountCls(t)}">${money(t.amount)}</span></li>`).join('')}${g.items.length > 4 ? `<li class="muted">и ещё ${g.items.length - 4}</li>` : ''}</ul>` : ''}
-      <div class="group"><div class="group-h">${g.dir === 'out' ? 'Что это за трата?' : 'Что это за поступление?'}</div>
+      <div class="group"><div class="group-h">${cash ? 'Сняли наличные — на что их потратили?' : g.dir === 'out' ? 'Что это за трата?' : 'Что это за поступление?'}</div>
         <fieldset class="chips" aria-label="Категория">${catChipsHtml('qcat', g.dir, preselect)}<button class="chip-add" type="button" data-act="newcat">+ категория</button></fieldset>
         ${newCatRowHtml('q')}
         <button class="link left" type="button" data-act="cats">Переименовать или удалить категории</button></div>
@@ -771,7 +780,7 @@ function renderQueue() {
         <fieldset class="chips" aria-label="Метки">${chipsHtml('qtag', S.tags, [], 'checkbox')}</fieldset>
         <label class="field" for="q-comment">Комментарий${g.items.length > 1 ? ' (ко всем операциям группы)' : ''}<input id="q-comment" maxlength="200" autocomplete="off"></label>
       </details>
-      ${!generic ? ruleBoxHtml('q', g.key, true) : `<p class="muted small">В описании нет получателя, поэтому правило не создаётся${g.items.length > 1 ? '. Если операции разные, нажмите «Разобрать по одной»' : ''}.</p>`}
+      ${cash ? '' : !generic ? ruleBoxHtml('q', g.key, true) : `<p class="muted small">В описании нет получателя, поэтому правило не создаётся${g.items.length > 1 ? '. Если операции разные, нажмите «Разобрать по одной»' : ''}.</p>`}
       <p class="err" id="q-err" hidden></p>
       <button class="primary" type="button" data-act="done">Готово</button>
       <button class="secondary" type="button" data-act="ignore">Не учитывать${g.items.length > 1 ? ` (все ${g.items.length})` : ''}</button>
@@ -1137,7 +1146,7 @@ function renderMore() {
       S.rules.push(rule); reindex(); await db.put('rules', rule);
       const ch = [];
       for (const t of S.txs) {
-        if (!needsAnswer(t) || !ruleMatches(rule, t)) continue;
+        if (!needsAnswer(t) || !ruleMatches(rule, t) || isCashWithdrawal(t)) continue;
         if (rule.ignore) { t.ignored = true; t.ruleId = rule.id; ch.push(t); }
         else if (categoryFits(S.catMap.get(rule.category), t)) { t.category = rule.category; t.catBy = 'rule'; t.ruleId = rule.id; ch.push(t); }
       }
