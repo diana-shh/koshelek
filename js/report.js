@@ -126,6 +126,36 @@ function workRows(rep) {
   ];
 }
 
+/** Лист «Рабочие траты»: долг на начало и конец, суммы по подкатегориям, все рабочие операции периода. */
+function workSheet(XLSX, rep, catMap) {
+  const w = rep.work;
+  const MONEY = '#,##0.00';
+  const s = [['Рабочие траты — баланс'], [`Период: ${dateDots(rep.from)} – ${dateDots(rep.to)}${rep.bank ? ` · ${rep.bank}` : ''}`], [],
+    ...workRows(rep), [],
+    ['Подкатегория', 'Сумма, ₽', 'Операций']];
+  for (const e of w.subs) s.push([e.name, e.sum / 100, e.count]);
+  s.push([], ['Дата', 'Время', 'Банк', 'Что', 'Подкатегория', 'Комментарий', 'Сумма, ₽']);
+  for (const t of w.list) {
+    const c = t.category ? catMap.get(t.category) : null;
+    s.push([dateDots(t.date), t.time || '', t.bank || '', prettyDesc(t.desc),
+      c ? (c.parent ? c.name : (t.amount > 0 ? 'Получено от компании' : c.name)) : 'Прочее', t.comment || '', t.amount / 100]);
+  }
+  const ws = XLSX.utils.aoa_to_sheet(s);
+  setFormats(ws, XLSX, { 1: MONEY, 6: MONEY });
+  ws['!cols'] = [{ wch: 30 }, { wch: 14 }, { wch: 12 }, { wch: 44 }, { wch: 22 }, { wch: 34 }, { wch: 14 }];
+  return ws;
+}
+
+/** Отдельный файл только с рабочими тратами — без личных расходов, можно отправить в компанию. */
+export async function exportWorkXlsx(rep, { catMap }) {
+  const XLSX = await loadXLSX();
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, workSheet(XLSX, rep, catMap), 'Рабочие траты');
+  const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  const blob = new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  return saveFile(blob, `Рабочие_траты_${rep.from}_${rep.to}.xlsx`);
+}
+
 export async function exportXlsx(rep, { catMap, tagMap }) {
   const XLSX = await loadXLSX();
   const wb = XLSX.utils.book_new();
@@ -183,22 +213,7 @@ export async function exportXlsx(rep, { catMap, tagMap }) {
   ws3['!cols'] = [{ wch: 11 }, { wch: 7 }, { wch: 12 }, { wch: 8 }, { wch: 44 }, { wch: 28 }, { wch: 28 }, { wch: 14 }, { wch: 30 }, { wch: 14 }];
   XLSX.utils.book_append_sheet(wb, ws3, 'Операции');
 
-  const w = rep.work;
-  if (w.list.length) {
-    const s4 = [['Рабочие траты — баланс'], [period], [],
-      ...workRows(rep), [],
-      ['Подкатегория', 'Сумма, ₽', 'Операций']];
-    for (const e of w.subs) s4.push([e.name, e.sum / 100, e.count]);
-    s4.push([], ['Дата', 'Время', 'Что', 'Подкатегория', 'Комментарий', 'Сумма, ₽']);
-    for (const t of w.list) {
-      const c = t.category ? catMap.get(t.category) : null;
-      s4.push([dateDots(t.date), t.time || '', prettyDesc(t.desc), c ? (c.parent ? c.name : (t.amount > 0 ? 'Получено от компании' : c.name)) : 'Прочее', t.comment || '', t.amount / 100]);
-    }
-    const ws4 = XLSX.utils.aoa_to_sheet(s4);
-    setFormats(ws4, XLSX, { 1: MONEY, 5: MONEY });
-    ws4['!cols'] = [{ wch: 22 }, { wch: 14 }, { wch: 44 }, { wch: 22 }, { wch: 30 }, { wch: 14 }];
-    XLSX.utils.book_append_sheet(wb, ws4, 'Рабочие траты');
-  }
+  if (rep.work.list.length) XLSX.utils.book_append_sheet(wb, workSheet(XLSX, rep, catMap), 'Рабочие траты');
 
   const sal = rep.salary;
   if (sal) {

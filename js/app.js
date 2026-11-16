@@ -8,10 +8,10 @@ import {
 import { DEFAULT_CATEGORIES, DEFAULT_TAGS, BANKS } from './catalog.js';
 import { isCashWithdrawal, isMarketplaceTx, marketBrand, orderNo, merchantKey, isGenericKey, autoCategory, sortRules, makeRule, ruleMatches, dirOf, categoryFits, ruleScopes, suggestScope, findCounterpart } from './categorize.js';
 import { parseFile, tableToTx, ROLE_LABELS } from './importers.js';
-import { buildReport, exportXlsx, chartPng, isWorkTx, isReimbTx, workBalance, catLabel } from './report.js';
+import { buildReport, exportXlsx, exportWorkXlsx, chartPng, isWorkTx, isReimbTx, workBalance, catLabel } from './report.js';
 import { salaryCfg, salaryState, salaryPeriod, payoutList, rateOn, scheduleText, dm } from './salary.js';
 
-const APP_VERSION = '1.11.0';
+const APP_VERSION = '1.12.0';
 
 const S = {
   txs: [], byId: new Map(), rules: [], sortedRules: [], imports: [],
@@ -1073,6 +1073,7 @@ function renderReport() {
         <div><span class="eyebrow">${rep.work.close >= 0 ? 'Долг' : 'Переплата'} на ${dm(rep.to)}</span><span class="val">${rub(Math.abs(rep.work.close))}</span></div>
       </div>
       ${rep.work.subs.length ? `<div class="bars">${rep.work.subs.map(e => barRow(e, rep.work.spent, rep.work.subs[0].sum)).join('')}</div>` : ''}
+      <div class="btn-row"><button class="secondary" type="button" data-act="xlsx-work" ${rep.work.list.length ? '' : 'disabled'}>Excel только с рабочими тратами</button></div>
       <p class="muted small">На начало периода компания ${rep.work.open > 0 ? `была должна ${rub(rep.work.open)}` : rep.work.open < 0 ? `переплатила ${rub(-rep.work.open)}` : 'ничего не была должна'}. За всё время ${allWork.left > 0 ? `осталось вернуть <b>${rub(allWork.left)}</b>` : allWork.left < 0 ? `возмещено больше на <b>${rub(-allWork.left)}</b>` : 'всё возмещено'} (потрачено ${rub(allWork.spent)}, возмещено ${rub(allWork.back)}). ${r.includeWork ? 'Сейчас рабочие траты включены в расходы выше.' : 'В личные расходы и доходы рабочие траты и возмещения не входят.'}</p>
     </section>` : ''}
     ${sp ? `<section class="card">
@@ -1109,6 +1110,11 @@ function renderReport() {
     mread: (el) => { $('#m-read', screen).innerHTML = `<b>${esc(monthTitle(el.dataset.m))}</b> · ${rub(rep.byMonth.get(el.dataset.m) || 0)}`; },
     xlsx: async () => {
       try { busy('Готовлю Excel…'); await exportXlsx(rep, { catMap: S.catMap, tagMap: S.tagMap }); }
+      catch (e) { console.error(e); toast('Не получилось сохранить файл: ' + (e.message || e)); }
+      finally { busy(false); }
+    },
+    'xlsx-work': async () => {
+      try { busy('Готовлю Excel…'); await exportWorkXlsx(rep, { catMap: S.catMap }); }
       catch (e) { console.error(e); toast('Не получилось сохранить файл: ' + (e.message || e)); }
       finally { busy(false); }
     },
